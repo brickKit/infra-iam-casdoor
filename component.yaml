@@ -45,6 +45,17 @@ configSchema:
     otelBaseUrl:                      # ⚠️ 不能叫 otelEndpoint，*_ENDPOINT 是保留后缀
       type: string
       default: ""                     # 空 → Blackhole Exporter，零成本（§7.5）
+    iamJwksUrl:                       # ⚠️ 真正意义上的自引用（同 infra-authz 的
+      type: string                    # authzBundleUrl，不是它那种"名字长得像但指向
+                                       # 外部"的情形）：/api/iam/logout 用
+                                       # besdk.Authenticated，而全系统验应用 token
+                                       # 唯一的 JWKS 来源就是本组件自己的
+                                       # /.well-known/jwks.json——必须把这一项配置成
+                                       # 指向自己，否则 verifier 为 nil，logout 会
+                                       # fail-closed 403（be-sdk-go authz.go 的既有
+                                       # 判定链）。留空是合法的阶段性状态（同其余
+                                       # 组件的 iamJwksUrl 默认留空）
+      default: ""
     casdoorBaseUrl:                   # Casdoor 官方镜像是带外容器（形态 B），地址走配置项，
       type: string                    # 不是依赖边。brickkit 管理的容器要用 host.docker.internal
                                        # 才能连到宿主机上跑的带外容器（同 postgres-shared/
@@ -67,6 +78,12 @@ configSchema:
                                        # （真机核对过 Casdoor 的 Webhook 对象确实支持自定义
                                        # header，见 AGENTS.md）。漏了校验等于开了一个任何人
                                        # 都能伪造用户事件的口子
+    webhookCallbackUrl:               # Casdoor（带外容器）回调本组件用的地址——不能自动推导，
+      type: string                    # 取决于具体部署的 Docker 网络拓扑（真机核对过：Casdoor
+      default: ""                     # 所在的桥接网络够不到 host.docker.internal，要用桥接网关
+                                       # IP + 本组件 expose 出来的宿主机端口，见 AGENTS.md 的
+                                       # 网络拓扑记录）。留空表示跳过 webhook 自举这一步——常见
+                                       # 于本组件还没规划好带外网络地址的早期开发阶段，不算错误
     appTokenSigningKeyPem:            # 应用 token 的当前签名私钥，PEM 格式。⚠️ 必填、无默认值，
       type: string                    # 且**不自己生成**——合并部署时多个模块同进程，自己生成
                                        # 会让每次重启都换密钥。Manifest 没有 volumes 字段
@@ -78,6 +95,11 @@ configSchema:
     appTokenTtlSeconds:               # ⚠️ 必须与 infra-authz 的 accessTokenTtlSeconds 保持一致——
       type: integer                   # stale_since 窗口按它算，两边对不上窗口就算错
       default: 600
+    refreshTokenTtlSeconds:           # refresh token 的有效期，rotation 语义（§14.1.6：每次
+      type: integer                   # 刷新轮换，不是滑动续期）。默认 7 天——比应用 token 长
+      default: 604800                 # 得多是刻意的：应用 token 短命是为了角色变更能尽快生效，
+                                       # refresh token 长命是为了不用天天重新登录，两者服务的
+                                       # 是不同的目标，没有耦合的理由
     enabledComponents:                # /api/tenant/features 的数据来源——be-ops 生成
       type: string                    # brickkit.yaml 时写进来的逗号分隔组件清单。⚠️ 必须是
       default: ""                     # 逗号分隔字符串，不能写 YAML 数组（数组会被平台渲染成

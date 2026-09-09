@@ -49,13 +49,21 @@ CREATE TABLE signing_keys (
 -- ⚠️ dedup_key 退化设计：优先用 Casdoor 回调体里能找到的稳定字段
 -- （如果有的话）；找不到就退化成"事件动作 + payload 内容哈希"，在
 -- 应用代码里算好再写入——迁移层不关心具体算法，只保证这一列上有
--- 唯一约束。payload 整体落 JSONB 是刻意的宽容存储：payload 形状没有
--- 100% 确认之前，先存下来再说，别在解析阶段就丢数据。
+-- 唯一约束。
+--
+-- ⚠️ payload 列是 TEXT，不是 JSONB——这是真机测试踩出来的：JSONB 列
+-- 在写入阶段就会校验合法性，一条格式不是合法 JSON 的投递体（Casdoor
+-- 的 webhook payload 形状本来就没有 100% 确认，见上一段）会让 INSERT
+-- 直接报 `invalid input syntax for type json`，把"宽容存储、先存下来
+-- 再说"这条设计意图在写入这一步就打破了——"存不下不合法 JSON"与
+-- "保留原始内容供人工排查"是矛盾的，TEXT 才是两者都要时唯一的选择，
+-- 代价是失去 JSONB 的字段级查询能力（没有任何代码需要这个能力，
+-- 都是整条取出来在应用层解析）。
 CREATE TABLE webhook_deliveries (
     id           BIGSERIAL,
     dedup_key    TEXT        NOT NULL,
     event_action TEXT        NOT NULL DEFAULT '', -- 尽力标注的动作名（如 "add-user"），仅供排查，不参与业务判断
-    payload      JSONB       NOT NULL,
+    payload      TEXT        NOT NULL,
     received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     status       TEXT        NOT NULL DEFAULT 'RECEIVED', -- RECEIVED / PROCESSED / IGNORED / ERROR
     error        TEXT        NOT NULL DEFAULT '',

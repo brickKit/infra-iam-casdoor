@@ -1,0 +1,25 @@
+version: v2
+modules:
+  # 本组件自己的契约：STANDARD 全套规则，一个字都不放松。
+  - path: contracts
+    excludes: [contracts/vendor]
+    lint:
+      use:
+        - STANDARD
+      except:
+        # 读接口直接返回聚合根本身，不强制包一层 <RPC名>Response——本项目契约的一贯风格
+        - RPC_RESPONSE_STANDARD_NAME
+    breaking:
+      use:
+        - FILE
+  # ⚠️ 依赖方契约的只读镜像（本组件强依赖 infra-authz 的 ResolveClaims，
+  # 设计计划 §5）——本地生成客户端 stub，不 import 其他组件仓库的 Go
+  # 代码（铁律六）。不对目录结构较真：PACKAGE_DIRECTORY_MATCH 要求目录
+  # 匹配包名，这里故意多一层 vendor/ 前缀来标记"这是镜像不是本组件的
+  # 契约"（同 erp-sales 先例）。
+  - path: contracts/vendor
+    lint:
+      use:
+        - MINIMAL
+      except:
+        - PACKAGE_DIRECTORY_MATCH
