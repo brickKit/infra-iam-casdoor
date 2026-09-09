@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "infra-iam-casdoor 事件清单",
+  "note": "Schema 演进铁律：只增不删不改（决策 19）。消费者宽容反序列化。⚠️ user.* 三条标核心不标旁路——infra-notification 靠它们维护「给谁发、发到哪」的快照，漏一条的后果是审批通知发不出去且没有报错（设计计划 §4）。",
+  "envelope": {
+    "description": "所有事件共用的信封。三个 Header 字段由 be-sdk 自动填/校验（§3.10）",
+    "required": ["subject", "aggregate_id", "version", "trace_id", "causation_id", "hop_count", "occurred_at"],
+    "properties": {
+      "subject":      { "type": "string", "pattern": "^[a-z]+\\.[a-z-]+\\.[a-z-]+\\.v[0-9]+$" },
+      "aggregate_id": { "type": "string" },
+      "version":      { "type": "integer", "description": "消费者只在严格大于本地当前值时更新（决策 43）" },
+      "trace_id":     { "type": "string" },
+      "causation_id": { "type": "string" },
+      "hop_count":    { "type": "integer", "maximum": 5, "description": "> 5 直接丢弃进 DLQ（决策 42）" },
+      "occurred_at":  { "type": "string", "format": "date-time" }
+    }
+  },
+  "events": [
+    {
+      "subject": "infra.iam.user.created.v1",
+      "grade": "core",
+      "note": "Casdoor webhook 报告新用户时发。aggregate_id 是 sub。",
+      "payload": {
+        "type": "object",
+        "required": ["sub"],
+        "properties": {
+          "sub":          { "type": "string" },
+          "display_name": { "type": "string" },
+          "email":        { "type": "string" },
+          "phone":        { "type": "string", "description": "阶段三 Task 9 起，integration-im-dingtalk 用它换钉钉 userid（设计计划 §9 第 3 条：不靠登录，走手机号匹配）" },
+          "im_accounts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "channel":    { "type": "string" },
+                "account_id": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "subject": "infra.iam.user.updated.v1",
+      "grade": "core",
+      "note": "用户属性变更时发，payload 形状同 created + version 单调递增。",
+      "payload": {
+        "type": "object",
+        "required": ["sub", "version"],
+        "properties": {
+          "sub":          { "type": "string" },
+          "display_name": { "type": "string" },
+          "email":        { "type": "string" },
+          "phone":        { "type": "string" },
+          "im_accounts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "channel":    { "type": "string" },
+                "account_id": { "type": "string" }
+              }
+            }
+          },
+          "version": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "subject": "infra.iam.user.disabled.v1",
+      "grade": "core",
+      "note": "停用或删除时发。⚠️ 删除也发这条，不发 deleted——下游要的是「别再给他发消息了」，不是「把历史记录删了」（设计计划 §4）。",
+      "payload": {
+        "type": "object",
+        "required": ["sub"],
+        "properties": {
+          "sub": { "type": "string" }
+        }
+      }
+    },
+    {
+      "subject": "infra.iam.login.v1",
+      "grade": "peripheral",
+      "note": "换到应用 token（即登录完成）时发，仅供 infra-audit（阶段五）落审计，不驱动任何下发逻辑。",
+      "payload": {
+        "type": "object",
+        "required": ["sub"],
+        "properties": {
+          "sub":        { "type": "string" },
+          "ip":         { "type": "string" },
+          "occurred_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  ]
+}

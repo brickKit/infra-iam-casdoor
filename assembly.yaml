@@ -1,0 +1,52 @@
+id: infra/iam-casdoor                # 必须与 component.yaml 一致，be-ops 校验
+version: 1.0.0
+
+asset:
+  source_type: open_standard
+  assembly_role: default
+  contract_lock: strict
+  customization_guide: |
+    支持的登录方式、Casdoor 组织/应用初始化细节超出标准版时：
+    1. 主管理员在客户电脑本地复制本目录为定制目录（如 infra-iam-casdoor-acme），改 git remote。
+    2. 用 AI 在 backend/ 生成定制业务代码。
+    3. 严禁对 contracts/ 做破坏性变更；只允许在末尾追加新字段、使用新 Tag 编号——
+       族内契约（infra.iam.v1）要求 infra-iam-keycloak 将来能原样实现（§5.11）。
+    4. 把定制目录声明成 local 安装源并排在标准源前面（§3.4.1 遮蔽机制）。
+    ⚠️ metadata.id 与 version 一个字都不能改——改了所有依赖方的
+       INFRA_IAM_CASDOOR_ENDPOINT 会整个消失（虽然目前没有任何组件依赖本组件，
+       见下方"无入边"的说明）。
+
+    ⚠️ 设计计划 §3.2 明确论证过"两个 token"这条形态（Casdoor 只证明身份，
+    应用 token 由本组件签）是判过的立场，不是待定分歧——不要改成"Casdoor
+    直接签带角色的 token、本组件把 claims 镜像进去"，那条路已经被三个独立
+    的致命问题否决（踢人链路断掉、异步死循环、把角色数据焊回 Casdoor）。
+
+domain: infra
+tier: backend
+
+edge_routes:
+  # ⚠️ /.well-known/jwks.json 与 /api/iam/webhooks/casdoor 刻意不出现在
+  # 这里——前者只被其他组件的 be-sdk（内网直连）与它们自己的 iamJwksUrl
+  # 消费，后者只被 Casdoor 官方容器直连（走 expose 的宿主机端口 + 桥接网关
+  # IP，Casdoor 是带外容器、与本组件不在同一个 Docker 网络），两者都不经
+  # 公网网关暴露给最终用户浏览器（同 infra-authz 的 /authz/bundle 判据）。
+  - { path: /api/iam/token, auth: none }           # 换应用 token，目的就是"从没有身份变成有"
+  - { path: /api/iam/token/refresh, auth: none }    # 刷新——凭 refresh token 本身认证，不是会话
+  - { path: /api/iam/logout, auth: required }       # 仅需登录（besdk.Authenticated）
+  - { path: /api/tenant/features, auth: none }      # 前端启动时、还没登录就要用它决定渲染什么
+
+menus: []                            # 本组件没有面向最终用户的管理界面（阶段三范围内）
+
+data:
+  schema: infra_iam_casdoor           # registry/schemas.tsv
+  role:   infra_iam_casdoor_rw        # 只用于 SET LOCAL ROLE，从不登录，因此不进 brickkit.yaml
+
+data_scopes: none                     # 本组件不存用户表、不存角色（§1），refresh_tokens/
+                                       # signing_keys/webhook_deliveries/bootstrap_state 四张表
+                                       # 都是纯运维数据，不做行级过滤
+
+permissions: []                       # 本组件的 REST 面全部是 besdk.Public/besdk.Authenticated
+                                       # （§3 的端点表），没有一个对应具体业务权限键——它自己就是
+                                       # "还没有身份"与"有身份"之间的那道门，门本身不需要门禁
+
+shell: go-infra                       # 合并部署时进外壳三（§13.2、设计计划身份证）

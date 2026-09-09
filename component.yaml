@@ -1,0 +1,106 @@
+apiVersion: brickkit/v1
+kind: Component
+
+metadata:
+  id: infra/iam-casdoor               # ⚠️ Fork 件必须与标准件完全一致（§3.4.1）
+  name: IAM 适配层
+  version: 1.0.0                      # 精确版本，不接受 ^ / ~ / latest
+  description: Casdoor 官方镜像前面的薄适配层——应用 token 签发与刷新（两个 token 架构）、/api/tenant/features、Casdoor webhook 桥接。这一层才是 slot:iam，Casdoor 本身是带外容器
+  license: Apache-2.0
+  vendor: brickKit
+
+tags: [infra, iam, oidc, slot-iam]
+
+artifacts:
+  - type: api-contract
+    format: protobuf
+    files:
+      - contracts/infra/iam/v1/iam.proto
+      - contracts/events/iam.events.json
+  - type: api-contract
+    format: openapi
+    files: [contracts/iam.openapi.yaml]
+  - type: metadata                    # ← assembly.yaml 靠这一条随组件分发（§3.5）
+    files: [assembly.yaml]
+
+# ⚠️ 唯一一条强依赖：ResolveClaims 每次签发/刷新应用 token 都要现问
+# （设计计划 §5——签 token 那一刻必须拿到当下的角色，缓存等于把死循环
+# 引回来）。除此之外没有任何依赖，尤其是**没有任何组件对本组件建依赖
+# 边**——这是 slot:iam 能成立的物理前提（§5.11 硬约束、设计计划 §6）。
+dependencies:
+  components:
+    - infra/authz@1.0.2
+  resources:
+    # ⚠️ engine 逐字参与匹配（设计书 §2.7.3.1）：这里写的词必须与
+    #    brickkit.yaml 的 resources[].engine 完全相同，平台不认别名。
+    - { kind: database, engine: postgresql }
+    - { kind: mq,       engine: nats }         # 发 infra.iam.user.*.v1 等事件
+
+configSchema:
+  type: object
+  properties:
+    pgSchema:                         # ⚠️ 不能叫 databaseSchema，DATABASE_ 是保留前缀
+      type: string
+      default: infra_iam_casdoor
+    otelBaseUrl:                      # ⚠️ 不能叫 otelEndpoint，*_ENDPOINT 是保留后缀
+      type: string
+      default: ""                     # 空 → Blackhole Exporter，零成本（§7.5）
+    casdoorBaseUrl:                   # Casdoor 官方镜像是带外容器（形态 B），地址走配置项，
+      type: string                    # 不是依赖边。brickkit 管理的容器要用 host.docker.internal
+                                       # 才能连到宿主机上跑的带外容器（同 postgres-shared/
+                                       # nats-shared 两个基础资源的既有先例）
+    casdoorAdminUsername:             # 首次初始化调 Casdoor 管理 API（建组织/应用/webhook）
+      type: string                    # 用的身份——Casdoor 管理 API 是会话 cookie 认证，不是
+      default: admin                  # 走应用级 OIDC。"admin" 是 Casdoor 官方镜像的默认组织内
+                                       # 置管理员用户名（属于 built-in 组织）
+    casdoorAdminPassword:             # ⚠️ 必填、无默认值——同 POSTGRES_PASSWORD/
+      type: string                    # STORAGE_SECRET_KEY 一个级别的敏感值，不能给一个大家
+                                       # 都知道的默认密码当兜底
+    casdoorOrgName:                   # 本次装配要用的 Casdoor 组织名——首次初始化时若不存在则
+      type: string                    # 创建。不用 built-in（那是 Casdoor 自己的内置管理组织，
+      default: brickkit                # 见 §9：往 built-in 建普通用户默认被拒）
+    casdoorAppName:                   # 首次初始化时若不存在则创建，登录页/OIDC 客户端配置都挂
+      type: string                    # 在这个应用上
+      default: brickkit-app
+    webhookSharedSecret:              # ⚠️ 必填、无默认值。Casdoor 的 webhook 没有内置签名，
+      type: string                    # 只能靠"自定义 header 里放一个共享密钥"这条路自己校验
+                                       # （真机核对过 Casdoor 的 Webhook 对象确实支持自定义
+                                       # header，见 AGENTS.md）。漏了校验等于开了一个任何人
+                                       # 都能伪造用户事件的口子
+    appTokenSigningKeyPem:            # 应用 token 的当前签名私钥，PEM 格式。⚠️ 必填、无默认值，
+      type: string                    # 且**不自己生成**——合并部署时多个模块同进程，自己生成
+                                       # 会让每次重启都换密钥。Manifest 没有 volumes 字段
+                                       # （§6.3），只能走配置项注入，与数据库密码同级对待
+    appTokenPreviousPublicKeyPem:     # 密钥轮换用：换了新私钥之后，把上一把公钥留在这里一段
+      type: string                    # 时间——JWKS 端点同时挂新旧两把公钥（kid 区分），旧 token
+      default: ""                     # 在 TTL 内仍可验签，不做就是一次"全员被登出"（设计计划
+                                       # §3.3）。留空表示当前只有一把在用的钥匙
+    appTokenTtlSeconds:               # ⚠️ 必须与 infra-authz 的 accessTokenTtlSeconds 保持一致——
+      type: integer                   # stale_since 窗口按它算，两边对不上窗口就算错
+      default: 600
+    enabledComponents:                # /api/tenant/features 的数据来源——be-ops 生成
+      type: string                    # brickkit.yaml 时写进来的逗号分隔组件清单。⚠️ 必须是
+      default: ""                     # 逗号分隔字符串，不能写 YAML 数组（数组会被平台渲染成
+                                       # "[a b c]"，导读第 7 条）。平台不校验内容，喂错了不会
+                                       # 有任何运行时失败，只会让前端少几个菜单
+
+deployment:
+  type: container
+  image: brickenterprise/infra-iam-casdoor:1.0.0
+  port: 8200                          # 端口册 registry/ports.tsv
+  extraPorts:
+    - { name: grpc, port: 9200 }      # → INFRA_IAM_CASDOOR_GRPC_ENDPOINT（值仍以 http:// 开头）
+  labels:                             # 平台只搬运，不解释键值。值必须是字符串
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8200"
+    prometheus.io/path: "/metrics"
+  resources:
+    requests: { cpu: "150m", memory: "192Mi" }
+
+migration:
+  command: ["./migrate", "up"]
+
+healthCheck:
+  type: http
+  path: /healthz                      # ⚠️ 只查本进程存活，严禁查库、查 infra-authz、查 Casdoor（§12.3.6）
+  # startPeriodSeconds 不写：默认就是 60，Go 组件够用（§12.3.5）

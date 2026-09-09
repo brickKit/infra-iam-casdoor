@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package infra.iam.v1;
+
+option go_package = "github.com/brickKit/infra-iam-casdoor/gen/infra/iam/v1;iamv1";
+
+// IamService 是 infra-iam-casdoor 的 gRPC 面（设计计划 §3）。
+//
+// ⚠️ 包名是 infra.iam，不是 infra.iam_casdoor——§5.11 要求族内契约面
+// 完全一致，infra-iam-keycloak（替换件）将来要原样实现这一份契约，
+// 调用方不该因为换了实现就改 import 路径。
+//
+// ⚠️ 账密校验、MFA、扫码、社交登录、应用 token 的签发/刷新/登出**都不在
+// 这份 gRPC 契约里**——那些走 REST（浏览器 ↔ Casdoor 的标准 OIDC 流本组件
+// 不在中间；应用 token 换发是给前端用的 HTTP 接口，见 contracts/iam.openapi.yaml）。
+// 这里只有两个真正需要给其他组件用的同步读接口。
+service IamService {
+  // BatchGetUsers 是防 N+1 的唯一合法批量读方式（§3.8）：sub[] -> 用户
+  // 展示信息。⚠️ 回源 Casdoor 的用户 API，本组件不落一张 users 影子表
+  // （§2 末尾："那等于把 slot:iam 的可替换性又焊死一次"）。
+  rpc BatchGetUsers(BatchGetUsersRequest) returns (BatchGetUsersResponse);
+
+  // GetTenantFeatures 是 gRPC 版的 features 清单，给不方便走 HTTP 的
+  // 调用方（如 BFF）用，内容与 GET /api/tenant/features 完全一致。
+  rpc GetTenantFeatures(GetTenantFeaturesRequest) returns (GetTenantFeaturesResponse);
+}
+
+message ImAccount {
+  string channel = 1;   // "dingtalk" / "wechat" / ...
+  string account_id = 2; // 该渠道下的账号标识（如钉钉 unionid）
+}
+
+message User {
+  string sub = 1;
+  string display_name = 2;
+  string email = 3;
+  string phone = 4;
+  repeated ImAccount im_accounts = 5;
+}
+
+message BatchGetUsersRequest {
+  repeated string subs = 1;
+}
+
+message BatchGetUsersResponse {
+  // 顺序与 subs 一致；查不到的 sub 对应位置省略（同 batchGet 惯例）。
+  repeated User users = 1;
+}
+
+message GetTenantFeaturesRequest {}
+
+message GetTenantFeaturesResponse {
+  repeated string enabled_components = 1;
+}

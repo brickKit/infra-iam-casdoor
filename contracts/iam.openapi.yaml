@@ -1,0 +1,173 @@
+openapi: 3.0.3
+info:
+  title: infra-iam-casdoor · IAM 适配层
+  version: 1.0.0
+  description: |
+    对外 REST 面。⚠️ 与其他组件不同，本组件的路径**不走** `/{domain}/{name}/**`
+    前缀——这里的接口是全平台通用的登录/token 机器，从前端视角看与"这是
+    哪个组件提供的"无关（同 infra-authz 的 `/api/me/permissions` 判据）。
+
+    ⚠️ 账密校验、MFA、扫码、社交登录**一条都不在这份契约里**——那些是浏览器
+    ↔ Casdoor 官方镜像之间的标准 OIDC 流，本组件既不代理也不转发，只在
+    "认证成功之后"接手（设计计划 §3.2、§6.1）。
+
+# 没有统一 servers 前缀——见上，路径本身已经是最终形态。
+
+# ⚠️ /healthz 不在这份契约里：be-sdk-go 的 NewGinEngine 给每个组件统一挂的，
+# 路径固定是裸根路径 /healthz（§12.3.6）。
+
+paths:
+  /api/iam/token:
+    post:
+      summary: 用 Casdoor 的身份 token 换一个应用 token（登录完成的最后一步）
+      description: |
+        入参是浏览器与 Casdoor 走完标准 OIDC 流之后拿到的身份 token（只有
+        `sub` 等身份字段，不含角色）。本组件验签这个 token（Casdoor 的
+        JWKS），再调 infra-authz 的 `ResolveClaims` 现问角色/部门/组织，
+        最后用自己的私钥签出应用 token（带 `roles[]`/`dept_path`/`org_id`）+
+        一个 refresh token。besdk.Public 是必然的——这一步的目的就是把
+        "还没有应用身份"变成"有"（设计计划 §3）。
+      operationId: exchangeToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [casdoor_id_token]
+              properties:
+                casdoor_id_token: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "401":
+          description: Casdoor 身份 token 验签失败
+
+  /api/iam/token/refresh:
+    post:
+      summary: 用 refresh token 换一对新的 token
+      description: |
+        重新调一次 `ResolveClaims`，所以新签出的应用 token 角色天然是最新
+        的；refresh token 本身按 rotation 语义轮换（不是滑动续期，设计书
+        §14.1.6）——这次用掉的 refresh token 立刻失效，响应里的才是下次
+        要用的那个。
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "401":
+          description: refresh token 不存在、已撤销或已过期
+
+  /api/iam/logout:
+    post:
+      summary: 作废当前 refresh token
+      description: 仅需登录（besdk.Authenticated）——任何已验签的应用 token 都能登出自己的 refresh token，不需要具体业务权限键。
+      operationId: logout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: 已作废（对一个已经作废的 refresh token 重复调用同样返回 200，幂等）
+
+  /.well-known/jwks.json:
+    get:
+      summary: 应用 token 的验签公钥
+      description: |
+        ⚠️ 不经网关暴露，仅内网可达（不在 assembly.yaml 的 edge_routes 里）
+        ——各组件的 `iamJwksUrl` 指向这里，不是指向 Casdoor。密钥轮换期间
+        会同时挂新旧两把公钥（`kid` 区分）。
+      operationId: getJwks
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Jwks" }
+
+  /api/tenant/features:
+    get:
+      summary: 本次装配启用了哪些组件
+      description: |
+        数据来源是 `be-ops` 生成 `brickkit.yaml` 时写进 `config.enabledComponents`
+        的逗号分隔字符串，本组件读 `ENABLED_COMPONENTS` 环境变量原样下发。
+        besdk.Public 是刻意的：前端还没登录就要用它决定渲染什么（设计计划 §3.1）。
+      operationId: getTenantFeatures
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled_components:
+                    type: array
+                    items: { type: string }
+
+  /api/iam/webhooks/casdoor:
+    post:
+      summary: Casdoor 的用户增删改事件回调
+      description: |
+        ⚠️ 不经网关暴露——Casdoor 是带外容器，与本组件不在同一个 Docker
+        网络，直连本组件 expose 出来的宿主机端口（同 postgres-shared/
+        nats-shared 两个基础资源反过来被 brickkit 容器访问的既有先例，
+        只是这次方向相反）。besdk.Public 指的是"不走权限键"，不是"不
+        校验"——真正的校验是比对 `X-Shared-Secret`（或 Casdoor webhook
+        配置里那个自定义 header 名，见 configSchema 的 `webhookSharedSecret`）
+        是不是配置的共享密钥。**漏了这条校验就等于开了一个任何人都能
+        伪造用户事件的口子**（设计计划 §3、AGENTS.md 明确禁令）。
+      operationId: casdoorWebhook
+      security:
+        - sharedSecretHeader: []
+      responses:
+        "200":
+          description: 已接收（不代表事件已经处理完，Outbox 异步发布）
+        "401":
+          description: 共享密钥校验失败
+
+components:
+  securitySchemes:
+    sharedSecretHeader:
+      type: apiKey
+      in: header
+      name: X-Shared-Secret
+
+  schemas:
+    TokenPair:
+      type: object
+      properties:
+        access_token:  { type: string, description: "应用 token（JWT），TTL 见 configSchema 的 appTokenTtlSeconds" }
+        refresh_token: { type: string }
+        token_type:    { type: string, enum: [Bearer] }
+        expires_in:    { type: integer, description: "秒" }
+
+    Jwks:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            description: 标准 JWK（RFC 7517），字段含 kty/use/alg/kid/n/e
