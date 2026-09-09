@@ -4,10 +4,15 @@ kind: Component
 metadata:
   id: infra/iam-casdoor               # ⚠️ Fork 件必须与标准件完全一致（§3.4.1）
   name: IAM 适配层
-  version: 1.0.1                      # 精确版本，不接受 ^ / ~ / latest
+  version: 1.0.2                      # 精确版本，不接受 ^ / ~ / latest
                                        # v1.0.1：升级 be-sdk-go 到 v0.2.3（修 RED 指标/访问日志
                                        # 把 c.Error 错误响应误记成 200 的中间件顺序 bug，真机部署
                                        # 本组件时发现），无破坏性变更
+                                       # v1.0.2：真机换真实 Casdoor token 时发现 OIDC 发现文档给出
+                                       # 的 jwks_uri 用的是 Casdoor 的 origin 配置（部署级全局唯一
+                                       # 值），从本组件容器内部连不通——新增 rebaseHost，把 jwks_uri
+                                       # 的 host 强制换成 casdoorBaseUrl 自己的，只留发现文档给出
+                                       # 的路径，无破坏性变更
   description: Casdoor 官方镜像前面的薄适配层——应用 token 签发与刷新（两个 token 架构）、/api/tenant/features、Casdoor webhook 桥接。这一层才是 slot:iam，Casdoor 本身是带外容器
   license: Apache-2.0
   vendor: brickKit
@@ -111,7 +116,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/infra-iam-casdoor:1.0.1
+  image: brickenterprise/infra-iam-casdoor:1.0.2
   port: 8200                          # 端口册 registry/ports.tsv
   extraPorts:
     - { name: grpc, port: 9200 }      # → INFRA_IAM_CASDOOR_GRPC_ENDPOINT（值仍以 http:// 开头）

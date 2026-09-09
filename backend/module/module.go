@@ -9,6 +9,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -156,6 +157,17 @@ func discoverIDTokenVerifier(ctx context.Context, casdoorBaseURL string, svc *se
 	for {
 		issuer, jwksURI, err := casdoor.DiscoverOIDC(ctx, casdoorBaseURL)
 		if err == nil {
+			// ⚠️ 真机踩出来的坑：不能把发现文档给出的 jwks_uri 原样拿去连。
+			// Casdoor 的 origin 配置是**部署级全局唯一值**，同一份发现文档
+			// 会被至少两类调用方消费——本组件（brickkit 管理的容器，只能
+			// 用 casdoorBaseUrl 那种地址够到 Casdoor）与人在宿主机上直接
+			// 测试用的 curl/集成测试（只能用宿主机能解析的地址）——两者
+			// 需要的 host:port 往往不同，origin 只能二选一。把 jwks_uri
+			// 的 host 部分强制换成 casdoorBaseUrl 自己的（本组件已经用它
+			// 成功拉到了这份发现文档，天然可达），只留发现文档给出的路径
+			// ——issuer 字符串本身不换（它是签名里的身份声明，不是网络
+			// 地址，不需要能连得上）。
+			jwksURI = rebaseHost(jwksURI, casdoorBaseURL)
 			v, verr := casdoor.NewIDTokenVerifier(ctx, jwksURI, issuer)
 			if verr == nil {
 				svc.SetIDVerifier(v)
@@ -174,6 +186,22 @@ func discoverIDTokenVerifier(ctx context.Context, casdoorBaseURL string, svc *se
 			backoff *= 2
 		}
 	}
+}
+
+// rebaseHost 把 rawURL 的 scheme+host 换成 baseURL 的（只留 rawURL 的
+// path/query），解析失败时原样返回 rawURL——宁可让调用方按老路径失败
+// 重试，也不要因为这一步解析出错就 panic 或吞掉错误。
+func rebaseHost(rawURL, baseURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	b, err := url.Parse(baseURL)
+	if err != nil {
+		return rawURL
+	}
+	u.Scheme, u.Host = b.Scheme, b.Host
+	return u.String()
 }
 
 // splitNonEmpty 把 enabledComponents 那种逗号分隔字符串拆开，过滤空
