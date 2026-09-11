@@ -4,7 +4,10 @@ kind: Component
 metadata:
   id: infra/iam-casdoor               # ⚠️ Fork 件必须与标准件完全一致（§3.4.1）
   name: IAM 适配层
-  version: 1.0.3                      # 精确版本，不接受 ^ / ~ / latest
+  version: 1.0.4                      # 精确版本，不接受 ^ / ~ / latest
+                                       # v1.0.4：强依赖版本号同步跟进 infra/authz@1.0.3——
+                                       # v1.0.3 发布时漏了这一条，dependency-version-scan gate
+                                       # 真机抓到（C16），无破坏性变更。
                                        # v1.0.3：新增 scripts/seed.sh + make seed/seed-clean——
                                        # 种子身份（万能测试用户 + ROPC 测试应用）归本组件自己
                                        # 持有（总纲 SOP-W-7），验证了"身份类种子数据链式调用"
@@ -43,7 +46,7 @@ artifacts:
 # 边**——这是 slot:iam 能成立的物理前提（§5.11 硬约束、设计计划 §6）。
 dependencies:
   components:
-    - infra/authz@1.0.2
+    - infra/authz@1.0.3
   resources:
     # ⚠️ engine 逐字参与匹配（设计书 §2.7.3.1）：这里写的词必须与
     #    brickkit.yaml 的 resources[].engine 完全相同，平台不认别名。
@@ -122,7 +125,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/infra-iam-casdoor:1.0.3
+  image: brickenterprise/infra-iam-casdoor:1.0.4
   port: 8200                          # 端口册 registry/ports.tsv
   extraPorts:
     - { name: grpc, port: 9200 }      # → INFRA_IAM_CASDOOR_GRPC_ENDPOINT（值仍以 http:// 开头）
