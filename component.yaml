@@ -4,7 +4,13 @@ kind: Component
 metadata:
   id: infra/iam-casdoor               # ⚠️ Fork 件必须与标准件完全一致（§3.4.1）
   name: IAM 适配层
-  version: 1.0.2                      # 精确版本，不接受 ^ / ~ / latest
+  version: 1.0.3                      # 精确版本，不接受 ^ / ~ / latest
+                                       # v1.0.3：新增 scripts/seed.sh + make seed/seed-clean——
+                                       # 种子身份（万能测试用户 + ROPC 测试应用）归本组件自己
+                                       # 持有（总纲 SOP-W-7），验证了"身份类种子数据链式调用"
+                                       # 这条此前一直未验证的判据；根 infra/seed-data/seed.sh
+                                       # 改成调用它，不再重复实现。纯本地开发工具，无行为/
+                                       # 契约变更。
                                        # v1.0.1：升级 be-sdk-go 到 v0.2.3（修 RED 指标/访问日志
                                        # 把 c.Error 错误响应误记成 200 的中间件顺序 bug，真机部署
                                        # 本组件时发现），无破坏性变更
@@ -116,7 +122,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/infra-iam-casdoor:1.0.2
+  image: brickenterprise/infra-iam-casdoor:1.0.3
   port: 8200                          # 端口册 registry/ports.tsv
   extraPorts:
     - { name: grpc, port: 9200 }      # → INFRA_IAM_CASDOOR_GRPC_ENDPOINT（值仍以 http:// 开头）

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# 撤销 seed.sh 灌的测试身份——删 Casdoor 用户 + 测试应用。
+set -euo pipefail
+
+C_GRN=$'\033[32m'; C_RED=$'\033[31m'; C_OFF=$'\033[0m'
+ok()  { echo "${C_GRN}✓${C_OFF} $*"; }
+die() { echo "${C_RED}✗${C_OFF} $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"; }
+need curl; need python3
+
+CASDOOR_URL="${CASDOOR_URL:-http://localhost:8000}"
+SEED_USER="dev.superuser"
+SEED_APP="local-dev-seed-app"
+COOKIE_JAR="$(mktemp)"
+trap 'rm -f "$COOKIE_JAR"' EXIT
+
+curl -sf -o /dev/null "$CASDOOR_URL/api/health" || die "Casdoor（$CASDOOR_URL）连不上，先 brickkit up"
+
+curl -c "$COOKIE_JAR" -s -o /dev/null -X POST "$CASDOOR_URL/api/login" \
+  -H "Content-Type: application/json" \
+  -d '{"application":"app-built-in","organization":"built-in","username":"admin","password":"123","autoSignin":true,"type":"login"}'
+
+# ⚠️ 实测踩坑：delete-application 只给 {owner,name} 时返回
+# status:ok + data:"Unaffected"——看起来成功，应用其实原封不动没删掉
+# （直接 curl 验证过：删完立刻 get-application 还在）。跟 delete-user
+# 不一样（那个给 {owner,name} 就真删），delete-application 必须先
+# get-application 拿完整对象再整个传回去做 body，Casdoor 内部拿它去
+# 匹配的字段比 owner/name 多。应用不存在时 get-application 的 data
+# 是 null，直接跳过。
+APP_JSON="$(curl -b "$COOKIE_JAR" -s "$CASDOOR_URL/api/get-application?id=admin/$SEED_APP")"
+if echo "$APP_JSON" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("data") else 1)'; then
+  echo "$APP_JSON" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["data"]))' \
+    | curl -b "$COOKIE_JAR" -s -X POST "$CASDOOR_URL/api/delete-application" \
+      -H "Content-Type: application/json" -d @- >/dev/null
+  ok "已删除 Casdoor 测试应用 $SEED_APP"
+else
+  ok "Casdoor 测试应用 $SEED_APP 不存在，跳过"
+fi
+
+curl -b "$COOKIE_JAR" -s -X POST "$CASDOOR_URL/api/delete-user" \
+  -H "Content-Type: application/json" \
+  -d "{\"owner\":\"brickkit\",\"name\":\"$SEED_USER\"}" >/dev/null
+ok "已删除 Casdoor 用户 $SEED_USER（不存在也不报错）"

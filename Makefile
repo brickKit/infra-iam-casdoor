@@ -2,7 +2,7 @@ IMAGE   := brickenterprise/infra-iam-casdoor
 VERSION := $(shell grep -E '^\s+version:' component.yaml | head -1 | awk '{print $$2}')
 
 .DEFAULT_GOAL := help
-.PHONY: help all check-version test image migrate-idempotent dag-check contract-check import-scan module-check docs-check smoke
+.PHONY: help all check-version test image migrate-idempotent dag-check contract-check import-scan module-check docs-check smoke seed seed-clean
 
 help:  ## 列出所有目标
 	@awk 'BEGIN{FS=":.*##"; printf "\n用法: make <目标>\n\n"} \
@@ -99,3 +99,10 @@ smoke:  ## 原则一：只装这一个组件就能起来（§1.5、§3.11 第 8 
 	@# brickkit 不向上找 brickkit.yaml，必须从装配仓库根目录跑——本组件
 	@# 固定挂在 components/infra/iam-casdoor 下，根目录固定是 ../../..
 	@(cd ../../.. && brickkit up --dry-run >/dev/null) && echo "✓ smoke（完整版见 make tier0）"
+
+##@ 本地开发
+seed:  ## 灌本组件自己的种子身份：万能测试用户 + ROPC 测试应用（幂等，可重复跑）。要求 Casdoor（brickkit up）已经在跑
+	@bash scripts/seed.sh
+
+seed-clean:  ## 撤销 seed 灌的身份
+	@bash scripts/seed-clean.sh
