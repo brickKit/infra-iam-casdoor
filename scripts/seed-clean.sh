@@ -27,9 +27,11 @@ curl -c "$COOKIE_JAR" -s -o /dev/null -X POST "$CASDOOR_URL/api/login" \
 # get-application 拿完整对象再整个传回去做 body，Casdoor 内部拿它去
 # 匹配的字段比 owner/name 多。应用不存在时 get-application 的 data
 # 是 null，直接跳过。
+# ⚠️ 同 scripts/seed.sh 的既有注释：应用真实登录过一次之后，
+# get-application 响应里会带字面换行符的 customCss，strict=False 放宽。
 APP_JSON="$(curl -b "$COOKIE_JAR" -s "$CASDOOR_URL/api/get-application?id=admin/$SEED_APP")"
-if echo "$APP_JSON" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("data") else 1)'; then
-  echo "$APP_JSON" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["data"]))' \
+if echo "$APP_JSON" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin, strict=False).get("data") else 1)'; then
+  echo "$APP_JSON" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin, strict=False)["data"]))' \
     | curl -b "$COOKIE_JAR" -s -X POST "$CASDOOR_URL/api/delete-application" \
       -H "Content-Type: application/json" -d @- >/dev/null
   ok "已删除 Casdoor 测试应用 $SEED_APP"

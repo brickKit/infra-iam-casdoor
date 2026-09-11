@@ -51,7 +51,12 @@ else
   ok "Casdoor 用户 $SEED_USER 已存在，跳过创建"
 fi
 
-EXISTING_APP="$(curl -b "$COOKIE_JAR" -s "$CASDOOR_URL/api/get-application?id=admin/$SEED_APP" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("yes" if d.get("data") else "no")')"
+# ⚠️ 实测踩坑：应用被真实登录过一次之后，Casdoor 会往 get-application
+# 响应的 signinItems.customCss 里塞一个带字面换行符（不是转义 \n）的
+# 默认主题 CSS——严格模式的 JSON 解析会报 "Invalid control character"。
+# 用 strict=False 放宽，我们只关心 data 存不存在，不关心这个 UI 主题
+# 字段本身对不对。
+EXISTING_APP="$(curl -b "$COOKIE_JAR" -s "$CASDOOR_URL/api/get-application?id=admin/$SEED_APP" | python3 -c 'import json,sys; d=json.load(sys.stdin, strict=False); print("yes" if d.get("data") else "no")')"
 if [ "$EXISTING_APP" = "no" ]; then
   curl -b "$COOKIE_JAR" -s -X POST "$CASDOOR_URL/api/add-application" \
     -H "Content-Type: application/json" \
