@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 灌本地开发用的种子身份：一个万能测试用户 + 一个开着 ROPC 授权的测试
-# 应用（同 mdm-customer/mdm-product 的既有判据，总纲 SOP-W-7：种子数据
-# 归各组件自己持有）。
+# 灌本地开发用的种子身份：一组测试用户（覆盖不同角色/部门画像，不是只
+# 有一个全权限超级用户——总纲 SOP-W-7"数据要能真正体现数据权限维度"
+# 这条判据）+ 一个开着 ROPC 授权的测试应用（供全部测试用户共用）。
 #
 # ⚠️ 这里直接打 Casdoor 自己的管理 API（不是本组件的 gRPC/REST），不是
 # 例外——Casdoor 是本组件包装的带外容器，"建一个测试身份"这件事物理上
@@ -9,7 +9,17 @@
 # 不是随便找个组件塞进去的。
 #
 # 用法：make -C components/infra/iam-casdoor seed（或直接跑这个脚本）——
-# 幂等，单独跑就能拿到一个可登录的测试身份，不依赖装配层编排。
+# 幂等，单独跑就能拿到一组可登录的测试身份，不依赖装配层编排。
+#
+# 这组测试用户是"轻量契约"（同总纲 SOP-W-7 的种子数据契约精神）：
+# 用户名固定，任何组件的 seed.sh 都可以直接向 Casdoor 查这些用户名拿
+# 到 sub，不需要发明交接协议。角色/部门归属由 infra-authz 自己的
+# seed.sh 负责（本脚本只管"这个人存在，能登录"）。
+#
+#   dev.superuser        「本地测试」超级测试用户   全权限，无部门归属
+#   dev.sales.east        「本地测试」销售-华东     dev_sales_rep 角色，华东分部
+#   dev.warehouse.south   「本地测试」仓管-华南     dev_warehouse_manager 角色，华南分部
+#   dev.finance.viewer    「本地测试」财务只读       dev_finance_viewer 角色，无部门归属
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,7 +34,6 @@ need curl; need python3
 # Casdoor 是带外容器，管理 API 走宿主机映射端口（同装配仓库
 # infra/seed-data/seed.sh 的既有约定，不是这里新起的）。
 CASDOOR_URL="${CASDOOR_URL:-http://localhost:8000}"
-SEED_USER="dev.superuser"
 SEED_PASSWORD="DevSeed123!"
 SEED_APP="local-dev-seed-app"
 COOKIE_JAR="$(mktemp)"
@@ -36,20 +45,31 @@ curl -c "$COOKIE_JAR" -s -o /dev/null -X POST "$CASDOOR_URL/api/login" \
   -H "Content-Type: application/json" \
   -d '{"application":"app-built-in","organization":"built-in","username":"admin","password":"123","autoSignin":true,"type":"login"}'
 
-# add-user 对已存在的用户会报错但不影响后续——用 get-user 先判断存在与否，
-# 幂等地跳过创建（不能靠 add-user 的返回码，Casdoor 对"已存在"和"真的
-# 失败"用同一种 HTTP 200 + status:error 形状回，靠 msg 文本分辨不可靠）。
-EXISTING_USER="$(curl -b "$COOKIE_JAR" -s "$CASDOOR_URL/api/get-user?id=brickkit/$SEED_USER" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("yes" if d.get("data") else "no")')"
-if [ "$EXISTING_USER" = "no" ]; then
-  curl -b "$COOKIE_JAR" -s -X POST "$CASDOOR_URL/api/add-user" \
-    -H "Content-Type: application/json" \
-    -d "{\"owner\":\"brickkit\",\"name\":\"$SEED_USER\",\"password\":\"$SEED_PASSWORD\",\"email\":\"$SEED_USER@example.com\",\"displayName\":\"「本地测试」超级测试用户\",\"type\":\"normal-user\",\"isAdmin\":false,\"countryCode\":\"CN\"}" \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("status")=="ok", d' \
-    || die "创建 Casdoor 用户失败"
-  ok "已创建 Casdoor 用户 $SEED_USER"
-else
-  ok "Casdoor 用户 $SEED_USER 已存在，跳过创建"
-fi
+# ensure_user <username> <displayName>：幂等建一个 Casdoor 用户。
+# add-user 对已存在的用户会报错但不影响后续——用 get-user 先判断存在
+# 与否，幂等地跳过创建（不能靠 add-user 的返回码，Casdoor 对"已存在"
+# 和"真的失败"用同一种 HTTP 200 + status:error 形状回，靠 msg 文本
+# 分辨不可靠）。
+ensure_user() {
+  local username="$1" display_name="$2"
+  local existing
+  existing="$(curl -b "$COOKIE_JAR" -s "$CASDOOR_URL/api/get-user?id=brickkit/$username" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("yes" if d.get("data") else "no")')"
+  if [ "$existing" = "no" ]; then
+    curl -b "$COOKIE_JAR" -s -X POST "$CASDOOR_URL/api/add-user" \
+      -H "Content-Type: application/json" \
+      -d "{\"owner\":\"brickkit\",\"name\":\"$username\",\"password\":\"$SEED_PASSWORD\",\"email\":\"$username@example.com\",\"displayName\":\"$display_name\",\"type\":\"normal-user\",\"isAdmin\":false,\"countryCode\":\"CN\"}" \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("status")=="ok", d' \
+      || die "创建 Casdoor 用户 $username 失败"
+    ok "已创建 Casdoor 用户 $username"
+  else
+    ok "Casdoor 用户 $username 已存在，跳过创建"
+  fi
+}
+
+ensure_user "dev.superuser"      "「本地测试」超级测试用户"
+ensure_user "dev.sales.east"     "「本地测试」销售-华东"
+ensure_user "dev.warehouse.south" "「本地测试」仓管-华南"
+ensure_user "dev.finance.viewer" "「本地测试」财务只读"
 
 # ⚠️ 实测踩坑：应用被真实登录过一次之后，Casdoor 会往 get-application
 # 响应的 signinItems.customCss 里塞一个带字面换行符（不是转义 \n）的
@@ -68,7 +88,11 @@ else
   ok "Casdoor ROPC 测试应用 $SEED_APP 已存在，跳过创建"
 fi
 
-USER_JSON="$(curl -b "$COOKIE_JAR" -s "$CASDOOR_URL/api/get-user?id=brickkit/$SEED_USER")"
-SEED_SUB="$(echo "$USER_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
-[ -n "$SEED_SUB" ] || die "拿不到 $SEED_USER 的 sub"
-ok "$SEED_USER 的 sub = $SEED_SUB"
+sub_of() {
+  curl -b "$COOKIE_JAR" -s "$CASDOOR_URL/api/get-user?id=brickkit/$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])'
+}
+for u in dev.superuser dev.sales.east dev.warehouse.south dev.finance.viewer; do
+  sub="$(sub_of "$u")"
+  [ -n "$sub" ] || die "拿不到 $u 的 sub"
+  ok "$u 的 sub = $sub"
+done

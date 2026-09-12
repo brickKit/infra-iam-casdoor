@@ -4,7 +4,18 @@ kind: Component
 metadata:
   id: infra/iam-casdoor               # ⚠️ Fork 件必须与标准件完全一致（§3.4.1）
   name: IAM 适配层
-  version: 1.0.5                      # 精确版本，不接受 ^ / ~ / latest
+  version: 1.0.6                      # 精确版本，不接受 ^ / ~ / latest
+                                       # v1.0.6：make seed 从"一个全权限超级用户"扩成 4 个
+                                       # 测试用户——新增 dev.sales.east（销售-华东）、
+                                       # dev.warehouse.south（仓管-华南）、dev.finance.viewer
+                                       # （财务只读），角色/部门归属由 infra-authz 自己的
+                                       # seed.sh 负责，本组件只管"这个人存在、能登录"。
+                                       # scripts/seed.sh 的建号逻辑重构成 ensure_user() 循环，
+                                       # 支持任意多用户；用户名固定，是给下游反查的"轻量
+                                       # 契约"（同 mdm-customer 的固定 idempotency_key 判据）。
+                                       # seed-clean.sh 同步扩到删全部 4 个用户。依赖版本号
+                                       # 同步跟进 infra/authz@1.0.4（部门树+角色子集）。
+                                       # 无破坏性变更。
                                        # v1.0.5：修 scripts/seed.sh 与 scripts/seed-clean.sh 的
                                        # 真实 bug——Casdoor 应用被真实登录过一次之后，
                                        # get-application 响应里 signinItems.customCss 会带
@@ -54,7 +65,7 @@ artifacts:
 # 边**——这是 slot:iam 能成立的物理前提（§5.11 硬约束、设计计划 §6）。
 dependencies:
   components:
-    - infra/authz@1.0.3
+    - infra/authz@1.0.4
   resources:
     # ⚠️ engine 逐字参与匹配（设计书 §2.7.3.1）：这里写的词必须与
     #    brickkit.yaml 的 resources[].engine 完全相同，平台不认别名。
@@ -133,7 +144,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/infra-iam-casdoor:1.0.5
+  image: brickenterprise/infra-iam-casdoor:1.0.6
   port: 8200                          # 端口册 registry/ports.tsv
   extraPorts:
     - { name: grpc, port: 9200 }      # → INFRA_IAM_CASDOOR_GRPC_ENDPOINT（值仍以 http:// 开头）

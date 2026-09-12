@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 撤销 seed.sh 灌的测试身份——删 Casdoor 用户 + 测试应用。
+# 撤销 seed.sh 灌的测试身份——删全部测试用户 + 测试应用。
 set -euo pipefail
 
 C_GRN=$'\033[32m'; C_RED=$'\033[31m'; C_OFF=$'\033[0m'
@@ -9,7 +9,6 @@ need() { command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"; }
 need curl; need python3
 
 CASDOOR_URL="${CASDOOR_URL:-http://localhost:8000}"
-SEED_USER="dev.superuser"
 SEED_APP="local-dev-seed-app"
 COOKIE_JAR="$(mktemp)"
 trap 'rm -f "$COOKIE_JAR"' EXIT
@@ -39,7 +38,9 @@ else
   ok "Casdoor 测试应用 $SEED_APP 不存在，跳过"
 fi
 
-curl -b "$COOKIE_JAR" -s -X POST "$CASDOOR_URL/api/delete-user" \
-  -H "Content-Type: application/json" \
-  -d "{\"owner\":\"brickkit\",\"name\":\"$SEED_USER\"}" >/dev/null
-ok "已删除 Casdoor 用户 $SEED_USER（不存在也不报错）"
+for u in dev.superuser dev.sales.east dev.warehouse.south dev.finance.viewer; do
+  curl -b "$COOKIE_JAR" -s -X POST "$CASDOOR_URL/api/delete-user" \
+    -H "Content-Type: application/json" \
+    -d "{\"owner\":\"brickkit\",\"name\":\"$u\"}" >/dev/null
+  ok "已删除 Casdoor 用户 $u（不存在也不报错）"
+done
