@@ -4,7 +4,8 @@ kind: Component
 metadata:
   id: infra/iam-casdoor               # ⚠️ Fork 件必须与标准件完全一致（§3.4.1）
   name: IAM 适配层
-  version: 1.0.6                      # 精确版本，不接受 ^ / ~ / latest
+  version: 1.0.7                      # 精确版本，不接受 ^ / ~ / latest
+                                      # v1.0.7：不再 vendor infra-authz 的契约镜像（contracts/vendor/infra/authz），改直接 import 它发布的真身 gen/infra/authz 包（铁律六新增第二类白名单，设计书§13.3）——理由同 infra/authz 这次改动。contracts/vendor/ 与 gen/ 目录整个清空删除（本组件除了 vendor 的这一份，没有任何自己的 gRPC 契约）。gRPC 调用行为、契约面、业务逻辑均无变化， import-scan/单测/contract-check 全绿。
                                        # v1.0.6：make seed 从"一个全权限超级用户"扩成 4 个
                                        # 测试用户——新增 dev.sales.east（销售-华东）、
                                        # dev.warehouse.south（仓管-华南）、dev.finance.viewer
@@ -65,7 +66,7 @@ artifacts:
 # 边**——这是 slot:iam 能成立的物理前提（§5.11 硬约束、设计计划 §6）。
 dependencies:
   components:
-    - infra/authz@1.0.4
+    - infra/authz@1.0.5
   resources:
     # ⚠️ engine 逐字参与匹配（设计书 §2.7.3.1）：这里写的词必须与
     #    brickkit.yaml 的 resources[].engine 完全相同，平台不认别名。
@@ -144,7 +145,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/infra-iam-casdoor:1.0.6
+  image: brickenterprise/infra-iam-casdoor:1.0.7
   port: 8200                          # 端口册 registry/ports.tsv
   extraPorts:
     - { name: grpc, port: 9200 }      # → INFRA_IAM_CASDOOR_GRPC_ENDPOINT（值仍以 http:// 开头）

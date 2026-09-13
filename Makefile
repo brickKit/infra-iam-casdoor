@@ -51,9 +51,14 @@ contract-check:  ## 禁破坏性变更（§8.5、决策 33）。只查本组件�
 	buf lint
 	buf breaking --against '.git#branch=main'
 
-import-scan:  ## 铁律六：不许 import 任何其他组件仓库（§13.3）。vendor/ 生成的 gen/infra/authz/v1 物理上在本仓库自己的 module 里，天然不违反
+import-scan:  ## 铁律六：不许 import 任何其他组件仓库（§13.3）
+	@# 第二类白名单 github.com/brickKit/<repo>/gen/...：任意组件自己发布的
+	@# 生成物契约包，理由见 erp-sales 的 Makefile 同名注释、设计书 §13.3
+	@# 铁律六新增说明。本组件直接 import infra-authz/gen/infra/authz 就
+	@# 靠这条放行，不再是自己仓库内部的镜像。
 	@bad="$$(go list -deps ./... 2>/dev/null | grep -E '^github.com/brickKit/' \
-	         | grep -vE '^github.com/brickKit/(infra-iam-casdoor|be-sdk-go)(/|$$)' || true)"; \
+	         | grep -vE '^github.com/brickKit/(infra-iam-casdoor|be-sdk-go)(/|$$)' \
+	         | grep -vE '^github.com/brickKit/[^/]+/gen/' || true)"; \
 	 if [ -n "$$bad" ]; then \
 	   echo "✗ 铁律六违规，import 了其他组件仓库："; echo "$$bad"; exit 1; fi; \
 	 echo "✓ 无组件间 import"

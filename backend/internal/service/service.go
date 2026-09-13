@@ -13,7 +13,7 @@ import (
 
 	besdk "github.com/brickKit/be-sdk-go"
 
-	authzv1 "github.com/brickKit/infra-iam-casdoor/gen/infra/authz/v1"
+	authzv1 "github.com/brickKit/infra-authz/gen/infra/authz/v1"
 
 	"github.com/brickKit/infra-iam-casdoor/backend/internal/casdoor"
 	"github.com/brickKit/infra-iam-casdoor/backend/internal/keys"
