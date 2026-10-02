@@ -5,7 +5,7 @@ go 1.25.11
 require (
 	github.com/MicahParks/jwkset v0.11.3
 	github.com/MicahParks/keyfunc/v3 v3.8.2
-	github.com/brickKit/be-sdk-go v0.4.0
+	github.com/brickKit/be-sdk-go v0.5.0
 	github.com/brickKit/infra-authz/gen/infra/authz v1.0.5
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
