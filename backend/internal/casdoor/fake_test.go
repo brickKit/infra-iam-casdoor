@@ -17,10 +17,11 @@ type fakeCasdoor struct {
 	logins  int
 	session string            // 当前有效的会话 cookie 值；置空 = 会话过期
 	users   map[string]string // sub -> displayName
+	byName  map[string]string // "<owner>/<name>" -> sub
 }
 
 func newFakeCasdoor(t *testing.T) *fakeCasdoor {
-	f := &fakeCasdoor{users: map[string]string{}}
+	f := &fakeCasdoor{users: map[string]string{}, byName: map[string]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -35,6 +36,9 @@ func newFakeCasdoor(t *testing.T) *fakeCasdoor {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		sub := r.URL.Query().Get("userId")
+		if id := r.URL.Query().Get("id"); id != "" {
+			sub = f.byName[id] // id=<owner>/<name> 的查法
+		}
 		name, ok := f.users[sub]
 		if !ok {
 			writeJSON(w, map[string]any{"status": "ok", "data": nil})

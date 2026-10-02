@@ -161,6 +161,18 @@ func TestAdminClient与IDTokenVerifier_真机走一遍完整流程(t *testing.T)
 		t.Fatalf("查一个不存在的 sub 应该返回 (nil, nil)：got (%+v, %v)", unknown, err)
 	}
 
+	// ── GetUserByName 与停用标记：webhook 回读用户当前状态时会跑的两步 ──
+	byName, err := c.GetUserByName(ctx, orgName, userName)
+	if err != nil || byName == nil || byName.ID != sub || byName.Owner != orgName || byName.Name != userName {
+		t.Fatalf("按 owner/name 查回来的应是同一个用户：%+v err=%v", byName, err)
+	}
+	if byName.IsForbidden || byName.IsDeleted {
+		t.Fatalf("刚建的用户不该是停用或已删除：%+v", byName)
+	}
+	if unknown, err := c.GetUserByName(ctx, orgName, "no-such-user-"+suffix); err != nil || unknown != nil {
+		t.Fatalf("按 owner/name 查不存在的用户应该返回 (nil, nil)：got (%+v, %v)", unknown, err)
+	}
+
 	// 同一个用户再走一遍密码授权，两次拿到的 sub 必须相同——sub 是
 	// Casdoor 内部的用户 UUID，不会因为重新登录而改变（真机核对过；这里把它
 	// 钉成一条可回归的断言）。
@@ -171,6 +183,12 @@ func TestAdminClient与IDTokenVerifier_真机走一遍完整流程(t *testing.T)
 	}
 	if sub2 != sub {
 		t.Fatalf("同一用户两次登录的 sub 不一致：%q != %q", sub, sub2)
+	}
+
+	// 停用放在两次登录之后：停用的用户走不了密码授权。
+	forbidUser(ctx, t, c, orgName, userName)
+	if u, err := c.GetUserBySub(ctx, sub); err != nil || u == nil || !u.IsForbidden {
+		t.Fatalf("在 Casdoor 里停用之后回读应带 isForbidden=true：%+v err=%v", u, err)
 	}
 
 	// ── Webhook ───────────────────────────────────────────────────
@@ -257,6 +275,24 @@ func createTestAppWithPasswordGrant(ctx context.Context, t *testing.T, c *AdminC
 		t.Fatalf("查测试用 token 应用失败：app=%+v, err=%v", app, err)
 	}
 	return app
+}
+
+// forbidUser 在 Casdoor 里停用一个用户：update-user 用请求体整体覆盖，所以先取回
+// 整个用户对象，只改 isForbidden 再写回去（与管理界面的做法一样）。
+func forbidUser(ctx context.Context, t *testing.T, c *AdminClient, owner, name string) {
+	t.Helper()
+	raw, err := c.get(ctx, "/api/get-user", url.Values{"id": {owner + "/" + name}})
+	if err != nil {
+		t.Fatalf("取用户失败：%v", err)
+	}
+	var user map[string]any
+	if err := json.Unmarshal(raw, &user); err != nil {
+		t.Fatal(err)
+	}
+	user["isForbidden"] = true
+	if _, err := c.post(ctx, "/api/update-user?id="+url.QueryEscape(owner+"/"+name), user); err != nil {
+		t.Fatalf("停用用户失败：%v", err)
+	}
 }
 
 func envOr(key, def string) string {

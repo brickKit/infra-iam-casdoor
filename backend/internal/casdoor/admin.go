@@ -1,6 +1,6 @@
 // Package casdoor 是本组件与 Casdoor 官方镜像之间唯二的两条接触面：
-// ① 管理 API（会话 cookie 认证，供首次初始化建组织/应用/webhook 用，
-// admin.go）；② OIDC 发现 + JWKS 验签（验浏览器换来的身份 token，
+// ① 管理 API（会话 cookie 认证，供启动对账建组织/应用/webhook、gRPC BatchGetUsers
+// 与 webhook 投递回读用户用，admin.go）；② OIDC 发现 + JWKS 验签（验浏览器换来的身份 token，
 // discovery.go/idtoken.go）。除此之外本组件不碰 Casdoor 的任何东西——
 // 认证流、用户资料、密码全部在 Casdoor 自己的界面里完成。
 package casdoor
@@ -205,24 +205,37 @@ func (c *AdminClient) CreateOrganization(ctx context.Context, name, displayName 
 
 // ── 用户（只读，回源查询，不落本地表）──────────────────────────────────
 
-// User 是 gRPC BatchGetUsers 关心的字段子集——Casdoor 的 User 对象有
-// 一百多个字段（社交登录各家一列），这里只取跟"给用户一个可展示身份"
-// 有关的那几个。
+// User 是本组件关心的字段子集——Casdoor 的 User 对象有一百多个字段（社交登录
+// 各家一列），这里只取 gRPC BatchGetUsers 与 webhook 回读（service 包按投递回读
+// 用户的当前状态再发事件）用得到的那几个。
 type User struct {
-	ID          string `json:"id"` // 全系统身份的 sub，见 idtoken.go 顶部注释
+	ID          string `json:"id"`    // 全系统身份的 sub，见 idtoken.go 顶部注释
+	Owner       string `json:"owner"` // 用户所在的组织名；与 Name 一起是 Casdoor 的另一种用户标识
+	Name        string `json:"name"`
 	DisplayName string `json:"displayName"`
 	Email       string `json:"email"`
 	Phone       string `json:"phone"`
-	Dingtalk    string `json:"dingtalk"` // 用户在 Casdoor 绑定了钉钉才有值，否则为空
+	Dingtalk    string `json:"dingtalk"`    // 用户在 Casdoor 绑定了钉钉才有值，否则为空
+	IsForbidden bool   `json:"isForbidden"` // 管理员在 Casdoor 里把人停用（禁止登录）
+	IsDeleted   bool   `json:"isDeleted"`   // 组织开了软删除时，删掉的用户还查得到、带这个标记
 }
 
 // GetUserBySub 按 sub（Casdoor 内部 UUID）查用户——真机核对过
 // `GET /api/get-user?userId=<uuid>` 直接按这个字段查，不需要先知道
-// owner/name（那对参数走的是另一种 id=owner/name 的查法，两者是 Casdoor
-// 同一个接口支持的两种输入形式）。查不到返回 (nil, nil)，同其余
-// XxxExists/GetXxx 方法的既有判据。
+// owner/name。查不到返回 (nil, nil)，同其余 XxxExists/GetXxx 方法的既有判据。
 func (c *AdminClient) GetUserBySub(ctx context.Context, sub string) (*User, error) {
-	data, err := c.get(ctx, "/api/get-user", url.Values{"userId": {sub}})
+	return c.getUser(ctx, url.Values{"userId": {sub}})
+}
+
+// GetUserByName 按 owner/name 查用户（同一个接口的另一种输入：`id=<owner>/<name>`，
+// 真机核对过；查不到同样是 status:ok + data:null）。只带 owner 与 name 的
+// add-user / delete-user 投递靠它找到用户的 sub。
+func (c *AdminClient) GetUserByName(ctx context.Context, owner, name string) (*User, error) {
+	return c.getUser(ctx, url.Values{"id": {owner + "/" + name}})
+}
+
+func (c *AdminClient) getUser(ctx context.Context, query url.Values) (*User, error) {
+	data, err := c.get(ctx, "/api/get-user", query)
 	if err != nil {
 		return nil, err
 	}

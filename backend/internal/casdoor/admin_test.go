@@ -38,6 +38,25 @@ func TestGetUserBySub_查不到是nil不是错误(t *testing.T) {
 	}
 }
 
+// 只带 owner 与 name 的 add-user / delete-user 投递要靠 owner/name 找到用户的 sub。
+func TestGetUserByName_按owner与name查到用户_查不到是nil(t *testing.T) {
+	f := newFakeCasdoor(t)
+	f.users["u-2"] = "李四"
+	f.byName["brickkit/lisi"] = "u-2"
+	ctx := context.Background()
+	c, err := NewAdminClient(ctx, f.server.URL, "admin", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := c.GetUserByName(ctx, "brickkit", "lisi")
+	if err != nil || u == nil || u.ID != "u-2" {
+		t.Fatalf("按 owner/name 应查到 u-2：u=%+v err=%v", u, err)
+	}
+	if u, err := c.GetUserByName(ctx, "brickkit", "nobody"); err != nil || u != nil {
+		t.Fatalf("查不到应返回 (nil, nil)，实际 u=%+v err=%v", u, err)
+	}
+}
+
 // 日志级别靠它分：连不上 / 5xx 是 Casdoor 暂时不在（Warn，后台会重试）；
 // Casdoor 明确拒绝（口令错、对象非法）要人去处理（Error）。
 func TestIsUnreachable_区分连不上与被拒绝(t *testing.T) {
