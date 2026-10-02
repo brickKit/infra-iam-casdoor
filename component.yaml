@@ -23,7 +23,7 @@ artifacts:
     files: [assembly.yaml]
 
 dependencies:
-  components: [infra/authz@2.0.0]
+  components: [infra/authz@2.0.1]
 
 configSchema:
   type: object
