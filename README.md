@@ -19,7 +19,7 @@ Prepare first: see "Before you deploy" in BRICKKIT.md (a PostgreSQL schema and l
 |---|---|
 | What it does and does not do, how to configure it, what to prepare | [BRICKKIT.md](BRICKKIT.md) |
 | Its gRPC, REST and event contracts | [contracts/](contracts/) |
-| Why it is designed this way: two tokens, fail-closed claims, webhook dedup, user events read back from Casdoor, open questions | [docs/design.md](docs/design.md) |
+| Why it is designed this way: two tokens, fail-closed claims, sessions that end, webhook dedup and the delivery queue, user events read back from Casdoor, open questions | [docs/design.md](docs/design.md) |
 | What it depends on (`infra/authz`) and its configuration keys | [component.yaml](component.yaml) |
 | How to develop it: code map, tests, pitfalls | [AGENTS.md](AGENTS.md) |
 

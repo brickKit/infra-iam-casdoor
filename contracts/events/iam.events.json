@@ -70,7 +70,7 @@
     {
       "subject": "infra.iam.user.disabled.v1",
       "grade": "core",
-      "note": "停用或删除时发：回读时 Casdoor 里已没有这个人，或已停用（isForbidden）、已软删除（isDeleted）。⚠️ 删除也发这条，不发 deleted——下游要的是「别再给他发消息了」，不是「把历史记录删了」。",
+      "note": "停用或删除时发：回读时 Casdoor 里已没有这个人，或已停用（isForbidden）、已软删除（isDeleted）。发这条的同一个事务里本组件作废这个人全部 refresh token（下一次刷新 401），并拒绝他再换 token，直到重新启用。⚠️ 删除也发这条，不发 deleted——下游要的是「别再给他发消息了」，不是「把历史记录删了」。",
       "payload": {
         "type": "object",
         "required": ["sub"],

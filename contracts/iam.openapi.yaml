@@ -23,7 +23,8 @@ paths:
       description: |
         入参是浏览器与 Casdoor 走完标准 OIDC 流之后拿到的身份 token（只有
         `sub` 等身份字段，不含角色）。本组件验签这个 token（Casdoor 的
-        JWKS），再调 infra-authz 的 `ResolveClaims` 现问角色/部门/组织，
+        JWKS；`aud` 必须是本组件的 Casdoor 应用或 configSchema 的
+        `CASDOOR_EXTRA_CLIENT_IDS` 里列的应用），再调 infra-authz 的 `ResolveClaims` 现问角色/部门/组织，
         最后用自己的私钥签出应用 token（带 `roles[]`/`dept_path`/`org_id`）+
         一个 refresh token。besdk.Public 是必然的——这一步的目的就是把
         "还没有应用身份"变成"有"。
@@ -46,18 +47,19 @@ paths:
         "400":
           description: 请求体缺 casdoor_id_token
         "401":
-          description: Casdoor 身份 token 验签失败
+          description: Casdoor 身份 token 验签失败、不是签给可信应用的（`aud`），或这个人在 Casdoor 里已停用或删除
         "503":
-          description: Casdoor 的验证器还没初始化成功（启动后 Casdoor 尚未可达），或 infra-authz 不可达（签发这一步 fail-closed，不用旧的角色签 token）
+          description: Casdoor 的验证器还没初始化成功（启动后 Casdoor 尚未可达），还不知道本组件 Casdoor 应用的 client ID（启动对账从没成功过），或 infra-authz 不可达（签发这一步 fail-closed，不用旧的角色签 token）
 
   /api/iam/token/refresh:
     post:
       summary: 用 refresh token 换一对新的 token
       description: |
         重新调一次 `ResolveClaims`，所以新签出的应用 token 角色天然是最新
-        的；refresh token 本身按 rotation 语义轮换（不是滑动续期）——
-        这次用掉的 refresh token 立刻失效，响应里的才是下次
-        要用的那个。
+        的；refresh token 每次都轮换——这次用掉的 refresh token 立刻失效，
+        响应里的才是下次要用的那个。轮换不延长会话：会话在登录后
+        `REFRESH_TOKEN_TTL_SECONDS`（configSchema）结束，轮换出的 token 不会晚于
+        那一刻过期，之后只能重新登录。
       operationId: refreshToken
       requestBody:
         required: true
@@ -77,7 +79,7 @@ paths:
         "400":
           description: 请求体缺 refresh_token
         "401":
-          description: refresh token 不存在、已撤销或已过期
+          description: refresh token 不存在、已撤销或已过期（包括会话已到登录时定下的终点，以及这个人在 Casdoor 里已停用或删除）
         "503":
           description: infra-authz 不可达。这次失败不消耗 refresh token，恢复后用同一个 token 重试即可
 
@@ -147,7 +149,9 @@ paths:
         ⚠️ 不经网关暴露——Casdoor 接进项目网络，按本组件的服务名回调（地址是
         configSchema 的 `WEBHOOK_CALLBACK_URL`）。事件内容不取自投递体：每次投递
         都回 Casdoor 读这个人的当前状态再发 `infra.iam.user.*.v1`，所以投递的
-        到达顺序不影响下游最后的值。besdk.Public 指的是"不走权限键"，不是"不
+        到达顺序不影响下游最后的值。Casdoor 从不重发投递，所以这里只登记、
+        回读与发事件由后台的投递队列做：Casdoor 此刻读不读得到都回 200，
+        读不到时投递在队列里等。besdk.Public 指的是"不走权限键"，不是"不
         校验"——真正的校验是比对 `X-Shared-Secret`（或 Casdoor webhook
         配置里那个自定义 header 名，见 configSchema 的 `WEBHOOK_SHARED_SECRET`）
         是不是配置的共享密钥。**漏了这条校验就等于开了一个任何人都能
@@ -157,11 +161,11 @@ paths:
         - sharedSecretHeader: []
       responses:
         "200":
-          description: 已接收（不代表事件已经处理完，Outbox 异步发布）
+          description: 已登记（去重；不代表事件已经发出——用户变更由后台队列回读 Casdoor 后经 Outbox 发布）
         "401":
           description: 共享密钥校验失败
         "503":
-          description: 读不回 Casdoor 里这个人的当前状态（管理会话还没就绪或 Casdoor 出错）；投递不登记
+          description: 本组件不再返回这个状态，保留声明只因契约只增。读不回 Casdoor（管理会话还没就绪、Casdoor 不可达或出错）时投递照样登记、回 200，在队列里等 Casdoor 回来；登记本身失败（数据库不可用）回 500
 
 components:
   securitySchemes:

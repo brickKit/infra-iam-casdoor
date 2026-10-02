@@ -19,7 +19,7 @@ brickkit up
 |---|---|
 | 它做什么、不做什么、怎么配置、要准备什么 | [BRICKKIT.zh.md](BRICKKIT.zh.md) |
 | gRPC、REST 与事件契约 | [contracts/](contracts/) |
-| 为什么这样设计：两个 token、claims 失败关闭、webhook 去重、用户事件回读 Casdoor、未决问题 | [docs/design.zh.md](docs/design.zh.md) |
+| 为什么这样设计：两个 token、claims 失败关闭、会话会结束、webhook 去重与投递队列、用户事件回读 Casdoor、未决问题 | [docs/design.zh.md](docs/design.zh.md) |
 | 依赖什么（`infra/authz`）、有哪些配置键 | [component.yaml](component.yaml) |
 | 怎么开发：代码地图、测试、易错点 | [AGENTS.zh.md](AGENTS.zh.md) |
 
