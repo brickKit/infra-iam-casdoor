@@ -43,8 +43,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TokenPair" }
+        "400":
+          description: 请求体缺 casdoor_id_token
         "401":
           description: Casdoor 身份 token 验签失败
+        "503":
+          description: Casdoor 的验证器还没初始化成功（启动后 Casdoor 尚未可达），或 infra-authz 不可达（签发这一步 fail-closed，不用旧的角色签 token）
 
   /api/iam/token/refresh:
     post:
@@ -70,8 +74,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TokenPair" }
+        "400":
+          description: 请求体缺 refresh_token
         "401":
           description: refresh token 不存在、已撤销或已过期
+        "503":
+          description: infra-authz 不可达。这次失败不消耗 refresh token，恢复后用同一个 token 重试即可
 
   /api/iam/logout:
     post:
@@ -90,6 +98,10 @@ paths:
       responses:
         "200":
           description: 已作废（对一个已经作废的 refresh token 重复调用同样返回 200，幂等）
+        "400":
+          description: 请求体缺 refresh_token
+        "401":
+          description: 没带应用 token，或应用 token 无效 / 已过期
 
   /.well-known/jwks.json:
     get:

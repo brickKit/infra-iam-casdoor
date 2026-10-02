@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -106,13 +107,22 @@ func (s *Service) ExchangeToken(ctx context.Context, casdoorIDToken string) (*To
 	return s.issueFor(ctx, sub)
 }
 
-// RefreshToken 是 POST /api/iam/token/refresh 的核心：验旧 refresh
-// token → 现问 claims（刷新时角色天然最新，设计计划 §3.2 第 ④ 步）→
-// 轮换 refresh token + 签新应用 token。
+// RefreshToken 是 POST /api/iam/token/refresh 的核心：验旧 refresh token →
+// 现问 claims 签新应用 token（刷新时角色天然最新）→ 轮换 refresh token。
+//
+// ⚠️ 先问 claims、后轮换：轮换会撤销旧 refresh token。先轮换的话，infra-authz
+// 一次抖动（ResolveClaims 失败、回 503）就把调用方手里唯一的 refresh token
+// 烧掉了，它重试时撞上重放检测（401，并撤销这个人名下全部 refresh token）——
+// 一次依赖抖动把在线用户全部踢下线。现在问 claims 失败时什么都没改，重试照常。
 func (s *Service) RefreshToken(ctx context.Context, oldRefreshToken string) (*TokenPair, error) {
 	sub, oldJTI, err := s.verifier.VerifyRefreshToken(oldRefreshToken)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrUnauthenticated, err.Error())
+	}
+
+	accessToken, expiresIn, err := s.signAccessTokenFor(ctx, sub)
+	if err != nil {
+		return nil, err
 	}
 
 	newRefreshToken, newJTI, newExpiresAt, err := s.issuer.SignRefreshToken(sub)
@@ -120,14 +130,9 @@ func (s *Service) RefreshToken(ctx context.Context, oldRefreshToken string) (*To
 		return nil, err
 	}
 	if err := s.repo.RotateRefreshToken(ctx, oldJTI, newJTI, sub, newExpiresAt); err != nil {
-		if err == repo.ErrRefreshTokenInvalid {
+		if errors.Is(err, repo.ErrRefreshTokenInvalid) {
 			return nil, fmt.Errorf("%w: refresh token 已失效", ErrUnauthenticated)
 		}
-		return nil, err
-	}
-
-	accessToken, expiresIn, err := s.signAccessTokenFor(ctx, sub)
-	if err != nil {
 		return nil, err
 	}
 	return &TokenPair{AccessToken: accessToken, RefreshToken: newRefreshToken, ExpiresIn: expiresIn}, nil

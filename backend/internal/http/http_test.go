@@ -157,6 +157,26 @@ func TestREST_刷新请求体缺字段回400(t *testing.T) {
 	}
 }
 
+// infra-authz 暂时不可达时刷新回 503，而且这次失败不能消耗掉调用方的 refresh
+// token：authz 恢复后用同一个 token 再刷新必须还能成功。消耗掉的话，第二次
+// 会撞上重放检测（401，并撤销这个人名下全部 refresh token）——一次依赖抖动就
+// 把在线用户全部踢下线。
+func TestREST_authz不可达时刷新回503且不消耗refreshToken(t *testing.T) {
+	f := newFixture(t, besdk.NewConfig(map[string]string{
+		"INFRA_AUTHZ_GRPC_ENDPOINT": "http://127.0.0.1:1", // 没有任何东西在听
+	}), false)
+	sub := uniqueSub("refresh-authz-down")
+	tok := f.issueRefresh(t, f.key, f.kid, sub)
+	body := fmt.Sprintf(`{"refresh_token":%q}`, tok)
+
+	for i := 1; i <= 2; i++ {
+		w := f.do(t, http.MethodPost, "/api/iam/token/refresh", body, nil)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("第 %d 次刷新期望 503（authz 不可达），实际 %d（%s）", i, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestREST_webhook共享密钥不对回401(t *testing.T) {
 	f := newFixture(t, besdk.NewConfig(nil), false)
 	for name, hdr := range map[string]map[string]string{
