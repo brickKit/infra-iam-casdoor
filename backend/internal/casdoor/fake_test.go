@@ -47,6 +47,9 @@ func newFakeCasdoor(t *testing.T) *fakeCasdoor {
 		}
 		writeJSON(w, map[string]any{"status": "ok", "data": map[string]any{"id": sub, "displayName": name}})
 	})
+	mux.HandleFunc("/api/reject", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"status": "error", "msg": "password or code is incorrect"})
+	})
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 	return f

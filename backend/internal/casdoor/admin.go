@@ -146,15 +146,15 @@ func (c *AdminClient) once(ctx context.Context, method, path string, query url.V
 func (c *AdminClient) do(req *http.Request) (json.RawMessage, error) {
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求 Casdoor 失败: %w", err)
+		return nil, &unreachableError{err}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取 Casdoor 响应失败: %w", err)
+		return nil, &unreachableError{fmt.Errorf("读取响应失败: %w", err)}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Casdoor 返回 HTTP %d", resp.StatusCode)
+		return nil, &unreachableError{fmt.Errorf("HTTP %d", resp.StatusCode)}
 	}
 	var env apiResponse
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -399,6 +399,20 @@ func (c *AdminClient) DeleteWebhook(ctx context.Context, name, organization stri
 		"owner": c.username, "name": name, "organization": organization,
 	})
 	return err
+}
+
+// unreachableError 标出"没能从 Casdoor 拿到一个正常的回答"：连不上、超时、
+// HTTP 状态码不是 200。与 Casdoor 明确回 status:error（拒绝）区分开。
+type unreachableError struct{ err error }
+
+func (e *unreachableError) Error() string { return "Casdoor 不可达: " + e.err.Error() }
+func (e *unreachableError) Unwrap() error { return e.err }
+
+// IsUnreachable 判断 err 是不是"Casdoor 暂时不在"（调用方据此打 Warn 并稍后重试），
+// 而不是 Casdoor 明确拒绝（口令错、对象非法——要人去处理）。
+func IsUnreachable(err error) bool {
+	var u *unreachableError
+	return errors.As(err, &u)
 }
 
 func isJSONNull(data json.RawMessage) bool {

@@ -6,16 +6,12 @@ package module
 
 import (
 	"context"
-	"log/slog"
-	"net/url"
 	"sync/atomic"
-	"time"
 
 	besdk "github.com/brickKit/be-sdk-go"
 	iamv1 "github.com/brickKit/infra-iam-casdoor/gen/infra/iam/v1"
 	"google.golang.org/grpc"
 
-	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/bootstrap"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/consumer"
 	grpcapi "github.com/brickKit/infra-iam-casdoor/v2/backend/internal/grpc"
@@ -58,39 +54,12 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 			iamv1.RegisterIamServiceServer(gs, grpcapi.New(&adminClientHolder, cfg.enabledComponents))
 		},
 
-		// Start 做三件事：① 登记签名密钥元数据 + 登录 Casdoor 管理 API +
-		// 跑一遍自举对账（都是一次性的，失败只记日志——本组件启动不该
-		// 因为 Casdoor 暂时不可达而整体失败，已登录用户不受影响）；
-		// ② 起一个后台循环，重试 OIDC 发现直到成功（Casdoor 可能比本
-		// 组件启动得晚，这是唯一需要"重试直到成功"而不是"失败一次就
-		// 放弃"的部分，因为它直接决定 POST /api/iam/token 这个最核心
-		// 接口能不能用）；③ 起 Outbox 推送 + 事件消费两个常驻循环。
+		// Start：登记签名密钥元数据；后台连 Casdoor 管理 API 并跑一遍自举对账、
+		// 后台做 OIDC 发现（两者都重试直到成功——Casdoor 可能比本组件起得晚，
+		// 暂时不可达不该让本组件启动失败）；起 Outbox 推送与事件消费两个常驻循环。
 		Start: func(ctx context.Context) error {
-			if err := svc.RegisterSigningKey(ctx, cfg.currentKid, "RS256"); err != nil {
-				rt.Logger.Error("登记当前签名密钥元数据失败", "error", err)
-			}
-			if cfg.previousPub != nil {
-				if err := svc.RegisterSigningKey(ctx, cfg.previousKid, "RS256"); err != nil {
-					rt.Logger.Error("登记上一把签名密钥元数据失败", "error", err)
-				}
-			}
-
-			adminClient, err := casdoor.NewAdminClient(ctx, cfg.casdoorBaseURL, cfg.casdoorAdminUsername, cfg.casdoorAdminPassword)
-			if err != nil {
-				rt.Logger.Error("登录 Casdoor 管理 API 失败，本轮跳过自举，gRPC BatchGetUsers 暂不可用", "error", err)
-			} else {
-				adminClientHolder.Store(adminClient)
-				bootstrap.Run(ctx, adminClient, r, bootstrap.Config{
-					OrgName:                cfg.casdoorOrgName,
-					AppName:                cfg.casdoorAppName,
-					AppRedirectURIs:        []string{}, // 阶段三没有前端，先不写死回调地址（阶段四补）
-					WebhookName:            "brickkit-user-events",
-					WebhookCallbackURL:     cfg.webhookCallbackURL,
-					WebhookSharedHeader:    webhookSharedSecretHeader,
-					WebhookSharedSecretVal: cfg.webhookSharedSecret,
-				}, rt.Logger)
-			}
-
+			registerSigningKeys(ctx, svc, cfg, rt.Logger)
+			go connectCasdoorAdmin(ctx, cfg, r, &adminClientHolder, rt.Logger)
 			go discoverIDTokenVerifier(ctx, cfg.casdoorBaseURL, svc, rt.Logger)
 
 			errCh := make(chan error, 2)
@@ -106,60 +75,4 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 		},
 		Stop: func(ctx context.Context) error { return nil }, // 后台循环靠 ctx 退出
 	}, nil
-}
-
-// discoverIDTokenVerifier 重试直到 OIDC 发现成功——成功一次之后
-// keyfunc 自己的后台刷新协程接管 JWKS 的持续更新，这个循环就退出了
-// （不是一个永久轮询，是"等它第一次可用"）。指数退避封顶 30 秒，Casdoor
-// 慢启动几秒到几十秒都能追上，也不会在它长时间不可达时疯狂重试。
-func discoverIDTokenVerifier(ctx context.Context, casdoorBaseURL string, svc *service.Service, logger *slog.Logger) {
-	backoff := time.Second
-	for {
-		issuer, jwksURI, err := casdoor.DiscoverOIDC(ctx, casdoorBaseURL)
-		if err == nil {
-			// ⚠️ 真机踩出来的坑：不能把发现文档给出的 jwks_uri 原样拿去连。
-			// Casdoor 的 origin 配置是**部署级全局唯一值**，同一份发现文档
-			// 会被至少两类调用方消费——本组件（brickkit 管理的容器，只能
-			// 用 CASDOOR_BASE_URL 那种地址够到 Casdoor）与人在宿主机上直接
-			// 测试用的 curl/集成测试（只能用宿主机能解析的地址）——两者
-			// 需要的 host:port 往往不同，origin 只能二选一。把 jwks_uri
-			// 的 host 部分强制换成 CASDOOR_BASE_URL 自己的（本组件已经用它
-			// 成功拉到了这份发现文档，天然可达），只留发现文档给出的路径
-			// ——issuer 字符串本身不换（它是签名里的身份声明，不是网络
-			// 地址，不需要能连得上）。
-			jwksURI = rebaseHost(jwksURI, casdoorBaseURL)
-			v, verr := casdoor.NewIDTokenVerifier(ctx, jwksURI, issuer)
-			if verr == nil {
-				svc.SetIDVerifier(v)
-				return
-			}
-			err = verr
-		}
-		logger.Error("初始化 Casdoor id_token 验证器失败，将重试（POST /api/iam/token 在此之前会返回 503）",
-			"error", err, "retry_in", backoff)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-		if backoff < 30*time.Second {
-			backoff *= 2
-		}
-	}
-}
-
-// rebaseHost 把 rawURL 的 scheme+host 换成 baseURL 的（只留 rawURL 的
-// path/query），解析失败时原样返回 rawURL——宁可让调用方按老路径失败
-// 重试，也不要因为这一步解析出错就 panic 或吞掉错误。
-func rebaseHost(rawURL, baseURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL
-	}
-	b, err := url.Parse(baseURL)
-	if err != nil {
-		return rawURL
-	}
-	u.Scheme, u.Host = b.Scheme, b.Host
-	return u.String()
 }

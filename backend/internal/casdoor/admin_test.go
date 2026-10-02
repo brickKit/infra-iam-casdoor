@@ -37,3 +37,24 @@ func TestGetUserBySub_查不到是nil不是错误(t *testing.T) {
 		t.Fatalf("查不到应返回 (nil, nil)，实际 u=%+v err=%v", u, err)
 	}
 }
+
+// 日志级别靠它分：连不上 / 5xx 是 Casdoor 暂时不在（Warn，后台会重试）；
+// Casdoor 明确拒绝（口令错、对象非法）要人去处理（Error）。
+func TestIsUnreachable_区分连不上与被拒绝(t *testing.T) {
+	f := newFakeCasdoor(t)
+	ctx := context.Background()
+
+	if _, err := NewAdminClient(ctx, "http://127.0.0.1:1", "admin", "pw"); err == nil || !IsUnreachable(err) {
+		t.Fatalf("连不上应判为 unreachable：%v", err)
+	}
+	c, err := NewAdminClient(ctx, f.server.URL, "admin", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.get(ctx, "/api/no-such-endpoint", nil); err == nil || !IsUnreachable(err) {
+		t.Fatalf("HTTP 404/5xx 应判为 unreachable：%v", err)
+	}
+	if _, err := c.get(ctx, "/api/reject", nil); err == nil || IsUnreachable(err) {
+		t.Fatalf("Casdoor 明确回 status:error 应判为被拒绝，不是 unreachable：%v", err)
+	}
+}
