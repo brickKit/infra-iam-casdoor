@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"crypto/rsa"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -79,10 +80,9 @@ func (s *Service) EnabledComponents() []string { return s.enabled }
 // 是两件事，见 http 包）。
 func (s *Service) WebhookSharedSecretHeader() string { return s.sharedHeader }
 func (s *Service) WebhookSharedSecretValid(v string) bool {
-	// ⚠️ 不追求常数时间比较——共享密钥泄露的后果由"密钥本身要保密"这一
-	// 层防御负责，不是这里；这个组件不是在做加密协议实现，没必要为一个
-	// 内部 webhook 引入 crypto/subtle。
-	return v != "" && v == s.sharedSecret
+	// 常数时间比较：这个端点经 expose 的宿主机端口可达，逐字节提前返回的比较
+	// 会把"猜对了前几位"泄露成响应时间差。
+	return v != "" && subtle.ConstantTimeCompare([]byte(v), []byte(s.sharedSecret)) == 1
 }
 
 // TokenPair 是签发/刷新接口共用的响应形状。
