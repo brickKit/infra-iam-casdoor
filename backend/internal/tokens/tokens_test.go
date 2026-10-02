@@ -9,7 +9,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/keys"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/keys"
 )
 
 func testKey(t *testing.T) (*rsa.PrivateKey, string) {

@@ -12,8 +12,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/casdoor"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/repo"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/repo"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(os.Stderr, nil)) }

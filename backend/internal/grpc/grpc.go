@@ -10,7 +10,7 @@ import (
 
 	iamv1 "github.com/brickKit/infra-iam-casdoor/gen/infra/iam/v1"
 
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/casdoor"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 )
 
 // server 持有一个指向 Casdoor 管理会话的原子指针，而不是直接持有会话

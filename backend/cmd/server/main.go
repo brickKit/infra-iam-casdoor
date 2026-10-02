@@ -2,7 +2,7 @@ package main
 
 import (
 	besdk "github.com/brickKit/be-sdk-go"
-	"github.com/brickKit/infra-iam-casdoor/backend/module"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/module"
 )
 
 // ⚠️ 这个文件永远只有这一行（§12.5.3、决策 109）。

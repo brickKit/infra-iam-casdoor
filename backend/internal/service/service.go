@@ -15,10 +15,10 @@ import (
 
 	authzv1 "github.com/brickKit/infra-authz/gen/infra/authz/v1"
 
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/casdoor"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/keys"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/repo"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/tokens"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/keys"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/repo"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/tokens"
 )
 
 // Service 持有签发/验证应用 token 用的密钥材料、refresh_tokens 的
@@ -27,7 +27,8 @@ import (
 // 暂时不可达是合法的启动态，见 module.go 的重试循环注释）。
 type Service struct {
 	repo         *repo.Repo
-	schema       string // 只为 PublishOutbox 拼表名用（besdk.PublishOutbox 的签名要求）
+	cfg          besdk.Config // 只为拨 infra/authz（INFRA_AUTHZ_GRPC_ENDPOINT）用
+	schema       string       // 只为 PublishOutbox 拼表名用（besdk.PublishOutbox 的签名要求）
 	issuer       *tokens.Issuer
 	verifier     *tokens.Verifier
 	idVerifier   atomic.Pointer[casdoor.IDTokenVerifier]
@@ -40,7 +41,7 @@ type Service struct {
 // New 构造 Service。currentPub/currentKid 恒非空（appTokenSigningKeyPem
 // 是必填项）；previousPub/previousKid 任一为空表示当前只有一把在用的
 // 钥匙（密钥轮换的非轮换态）。
-func New(r *repo.Repo, schema string, signingKey *rsa.PrivateKey, currentKid string,
+func New(r *repo.Repo, cfg besdk.Config, schema string, signingKey *rsa.PrivateKey, currentKid string,
 	previousPub *rsa.PublicKey, previousKid string,
 	accessTTL, refreshTTL time.Duration,
 	enabledComponents []string, webhookSharedSecret, webhookSharedHeader string,
@@ -51,6 +52,7 @@ func New(r *repo.Repo, schema string, signingKey *rsa.PrivateKey, currentKid str
 	}
 	return &Service{
 		repo:         r,
+		cfg:          cfg,
 		schema:       schema,
 		issuer:       tokens.NewIssuer(signingKey, currentKid, accessTTL, refreshTTL),
 		verifier:     tokens.NewVerifier(&signingKey.PublicKey, currentKid, previousPub, previousKid),
@@ -175,7 +177,7 @@ func (s *Service) issueFor(ctx context.Context, sub string) (*TokenPair, error) 
 // 外全部是 besdk.Public，见 assembly.yaml）。ResolveClaims 本身也没有
 // 按"谁在问"做任何数据范围过滤——它就是一个 sub -> claims 的纯查询。
 func (s *Service) signAccessTokenFor(ctx context.Context, sub string) (accessToken string, expiresIn int, err error) {
-	conn, err := besdk.SystemClient("infra/authz", "grpc")
+	conn, err := besdk.SystemClient(s.cfg, "infra/authz", "grpc")
 	if err != nil {
 		return "", 0, fmt.Errorf("拨号 infra-authz 失败: %w", err)
 	}

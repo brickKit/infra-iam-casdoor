@@ -18,15 +18,14 @@ import (
 	iamv1 "github.com/brickKit/infra-iam-casdoor/gen/infra/iam/v1"
 	"google.golang.org/grpc"
 
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/bootstrap"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/casdoor"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/consumer"
-	grpcapi "github.com/brickKit/infra-iam-casdoor/backend/internal/grpc"
-	httpapi "github.com/brickKit/infra-iam-casdoor/backend/internal/http"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/keys"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/repo"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/service"
-	"github.com/brickKit/infra-iam-casdoor/migrations"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/bootstrap"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/consumer"
+	grpcapi "github.com/brickKit/infra-iam-casdoor/v2/backend/internal/grpc"
+	httpapi "github.com/brickKit/infra-iam-casdoor/v2/backend/internal/http"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/keys"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/repo"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/service"
 )
 
 const webhookSharedSecretHeader = "X-Shared-Secret"
@@ -34,21 +33,21 @@ const webhookSharedSecretHeader = "X-Shared-Secret"
 // New 构造 infra-iam-casdoor 模块。签名一个字都不许改（§12.5.1）。
 func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 	// ⚠️ 配置只从 rt.Config 来，模块里零 os.Getenv（§12.5.3、决策 110）。
-	schema := rt.Config.StringOr("pgSchema", "infra_iam_casdoor")
+	schema := rt.Config.StringOr("PG_SCHEMA", "infra_iam_casdoor")
 	role := schema + "_rw"
 
-	casdoorBaseURL := rt.Config.MustString("casdoorBaseUrl")
-	casdoorAdminUsername := rt.Config.StringOr("casdoorAdminUsername", "admin")
-	casdoorAdminPassword := rt.Config.MustString("casdoorAdminPassword")
-	casdoorOrgName := rt.Config.StringOr("casdoorOrgName", "brickkit")
-	casdoorAppName := rt.Config.StringOr("casdoorAppName", "brickkit-app")
-	webhookSharedSecret := rt.Config.MustString("webhookSharedSecret")
-	webhookCallbackURL := rt.Config.StringOr("webhookCallbackUrl", "")
-	appTokenSigningKeyPem := rt.Config.MustString("appTokenSigningKeyPem")
-	appTokenPreviousPublicKeyPem := rt.Config.StringOr("appTokenPreviousPublicKeyPem", "")
-	appTokenTTL := time.Duration(rt.Config.IntOr("appTokenTtlSeconds", 600)) * time.Second
-	refreshTokenTTL := time.Duration(rt.Config.IntOr("refreshTokenTtlSeconds", 604800)) * time.Second
-	enabledComponents := splitNonEmpty(rt.Config.StringOr("enabledComponents", ""), ",")
+	casdoorBaseURL := rt.Config.MustString("CASDOOR_BASE_URL")
+	casdoorAdminUsername := rt.Config.StringOr("CASDOOR_ADMIN_USERNAME", "admin")
+	casdoorAdminPassword := rt.Config.MustString("CASDOOR_ADMIN_PASSWORD")
+	casdoorOrgName := rt.Config.StringOr("CASDOOR_ORG_NAME", "brickkit")
+	casdoorAppName := rt.Config.StringOr("CASDOOR_APP_NAME", "brickkit-app")
+	webhookSharedSecret := rt.Config.MustString("WEBHOOK_SHARED_SECRET")
+	webhookCallbackURL := rt.Config.StringOr("WEBHOOK_CALLBACK_URL", "")
+	appTokenSigningKeyPem := rt.Config.MustString("APP_TOKEN_SIGNING_KEY_PEM")
+	appTokenPreviousPublicKeyPem := rt.Config.StringOr("APP_TOKEN_PREVIOUS_PUBLIC_KEY_PEM", "")
+	appTokenTTL := time.Duration(rt.Config.IntOr("APP_TOKEN_TTL_SECONDS", 600)) * time.Second
+	refreshTokenTTL := time.Duration(rt.Config.IntOr("REFRESH_TOKEN_TTL_SECONDS", 604800)) * time.Second
+	enabledComponents := splitNonEmpty(rt.Config.StringOr("ENABLED_COMPONENTS", ""), ",")
 
 	signingKey, currentKid, err := loadSigningKey(appTokenSigningKeyPem)
 	if err != nil {
@@ -66,7 +65,7 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 
 	// ⚠️ 池从 rt.DB 来，不许自己 sql.Open（§13.3 铁律二）。
 	r := repo.New(rt.DB, role, schema)
-	svc := service.New(r, schema, signingKey, currentKid, previousPub, previousKid,
+	svc := service.New(r, rt.Config, schema, signingKey, currentKid, previousPub, previousKid,
 		appTokenTTL, refreshTokenTTL, enabledComponents, webhookSharedSecret, webhookSharedSecretHeader)
 
 	// HTTP：engine 必须用 besdk.NewGinEngine，它已挂好 OTel / request-id /
@@ -87,8 +86,6 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 		RegisterGRPC: func(gs *grpc.Server) {
 			iamv1.RegisterIamServiceServer(gs, grpcapi.New(&adminClientHolder, enabledComponents))
 		},
-
-		Migrations: migrations.FS, // 合并态由外壳按拓扑顺序跑（§13.3 铁律五）
 
 		// Start 做三件事：① 登记签名密钥元数据 + 登录 Casdoor 管理 API +
 		// 跑一遍自举对账（都是一次性的，失败只记日志——本组件启动不该

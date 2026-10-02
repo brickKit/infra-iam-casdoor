@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/casdoor"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/repo"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/repo"
 )
 
 // Config 是跑一遍自举需要的全部外部输入，字段直接对应 configSchema。

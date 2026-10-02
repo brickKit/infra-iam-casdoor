@@ -14,7 +14,7 @@ import (
 
 	besdk "github.com/brickKit/be-sdk-go"
 
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/service"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/service"
 )
 
 // RegisterRoutes 挂载全部路由。⚠️ 本组件没有一条真实业务权限键

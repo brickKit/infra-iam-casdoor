@@ -14,7 +14,7 @@ import (
 	besdk "github.com/brickKit/be-sdk-go"
 	"github.com/nats-io/nats.go"
 
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/repo"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/repo"
 )
 
 const subjectUserRoleChanged = "infra.authz.user_role.changed.v1"

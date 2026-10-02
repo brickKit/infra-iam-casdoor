@@ -2,50 +2,11 @@ apiVersion: brickkit/v1
 kind: Component
 
 metadata:
-  id: infra/iam-casdoor               # ⚠️ Fork 件必须与标准件完全一致（§3.4.1）
-  name: IAM 适配层
-  version: 1.0.10                      # 精确版本，不接受 ^ / ~ / latest
-                                      # v1.0.10：依赖版本号同步跟进 infra/authz@1.0.8，无破坏性变更。
-                                      # v1.0.9：依赖版本号同步跟进 infra/authz@1.0.7，无破坏性变更。
-                                      # v1.0.8：同 mdm/customer 这次改动，删掉 deployment.labels 的 prometheus.io/port，理由同上。无业务行为/契约变更。
-                                      # v1.0.7：不再 vendor infra-authz 的契约镜像（contracts/vendor/infra/authz），改直接 import 它发布的真身 gen/infra/authz 包（铁律六新增第二类白名单，设计书§13.3）——理由同 infra/authz 这次改动。contracts/vendor/ 与 gen/ 目录整个清空删除（本组件除了 vendor 的这一份，没有任何自己的 gRPC 契约）。gRPC 调用行为、契约面、业务逻辑均无变化， import-scan/单测/contract-check 全绿。
-                                       # v1.0.6：make seed 从"一个全权限超级用户"扩成 4 个
-                                       # 测试用户——新增 dev.sales.east（销售-华东）、
-                                       # dev.warehouse.south（仓管-华南）、dev.finance.viewer
-                                       # （财务只读），角色/部门归属由 infra-authz 自己的
-                                       # seed.sh 负责，本组件只管"这个人存在、能登录"。
-                                       # scripts/seed.sh 的建号逻辑重构成 ensure_user() 循环，
-                                       # 支持任意多用户；用户名固定，是给下游反查的"轻量
-                                       # 契约"（同 mdm-customer 的固定 idempotency_key 判据）。
-                                       # seed-clean.sh 同步扩到删全部 4 个用户。依赖版本号
-                                       # 同步跟进 infra/authz@1.0.4（部门树+角色子集）。
-                                       # 无破坏性变更。
-                                       # v1.0.5：修 scripts/seed.sh 与 scripts/seed-clean.sh 的
-                                       # 真实 bug——Casdoor 应用被真实登录过一次之后，
-                                       # get-application 响应里 signinItems.customCss 会带
-                                       # 字面换行符（不是转义 \n），严格模式的 json.load
-                                       # 报 "Invalid control character"；两处解析都改成
-                                       # strict=False。crm-opportunity@1.0.5 补自己的
-                                       # make seed 时真机跑出来的，之前没被触发是因为应用
-                                       # 从没真的走过一次登录。无破坏性变更。
-                                       # v1.0.4：强依赖版本号同步跟进 infra/authz@1.0.3——
-                                       # v1.0.3 发布时漏了这一条，dependency-version-scan gate
-                                       # 真机抓到（C16），无破坏性变更。
-                                       # v1.0.3：新增 scripts/seed.sh + make seed/seed-clean——
-                                       # 种子身份（万能测试用户 + ROPC 测试应用）归本组件自己
-                                       # 持有（总纲 SOP-W-7），验证了"身份类种子数据链式调用"
-                                       # 这条此前一直未验证的判据；根 infra/seed-data/seed.sh
-                                       # 改成调用它，不再重复实现。纯本地开发工具，无行为/
-                                       # 契约变更。
-                                       # v1.0.1：升级 be-sdk-go 到 v0.2.3（修 RED 指标/访问日志
-                                       # 把 c.Error 错误响应误记成 200 的中间件顺序 bug，真机部署
-                                       # 本组件时发现），无破坏性变更
-                                       # v1.0.2：真机换真实 Casdoor token 时发现 OIDC 发现文档给出
-                                       # 的 jwks_uri 用的是 Casdoor 的 origin 配置（部署级全局唯一
-                                       # 值），从本组件容器内部连不通——新增 rebaseHost，把 jwks_uri
-                                       # 的 host 强制换成 casdoorBaseUrl 自己的，只留发现文档给出
-                                       # 的路径，无破坏性变更
-  description: Casdoor 官方镜像前面的薄适配层——应用 token 签发与刷新（两个 token 架构）、/api/tenant/features、Casdoor webhook 桥接。这一层才是 slot:iam，Casdoor 本身是带外容器
+  id: infra/iam-casdoor
+  name: IAM adapter for Casdoor
+  version: 2.0.0
+  description: A thin adapter in front of Casdoor; issues and refreshes application tokens, serves /api/tenant/features and bridges Casdoor webhooks.
+  repository: https://github.com/brickKit/infra-iam-casdoor
   license: Apache-2.0
   vendor: brickKit
 
@@ -54,122 +15,61 @@ tags: [infra, iam, oidc, slot-iam]
 artifacts:
   - type: api-contract
     format: protobuf
-    files:
-      - contracts/infra/iam/v1/iam.proto
-      - contracts/events/iam.events.json
+    files: [contracts/infra/iam/v1/iam.proto, contracts/events/iam.events.json]
   - type: api-contract
     format: openapi
     files: [contracts/iam.openapi.yaml]
-  - type: metadata                    # ← assembly.yaml 靠这一条随组件分发（§3.5）
+  - type: metadata
     files: [assembly.yaml]
 
-# ⚠️ 唯一一条强依赖：ResolveClaims 每次签发/刷新应用 token 都要现问
-# （设计计划 §5——签 token 那一刻必须拿到当下的角色，缓存等于把死循环
-# 引回来）。除此之外没有任何依赖，尤其是**没有任何组件对本组件建依赖
-# 边**——这是 slot:iam 能成立的物理前提（§5.11 硬约束、设计计划 §6）。
 dependencies:
-  components:
-    - infra/authz@1.0.8
-  resources:
-    # ⚠️ engine 逐字参与匹配（设计书 §2.7.3.1）：这里写的词必须与
-    #    brickkit.yaml 的 resources[].engine 完全相同，平台不认别名。
-    - { kind: database, engine: postgresql }
-    - { kind: mq,       engine: nats }         # 发 infra.iam.user.*.v1 等事件
+  components: [infra/authz@2.0.0]
 
 configSchema:
   type: object
   properties:
-    pgSchema:                         # ⚠️ 不能叫 databaseSchema，DATABASE_ 是保留前缀
-      type: string
-      default: infra_iam_casdoor
-    otelBaseUrl:                      # ⚠️ 不能叫 otelEndpoint，*_ENDPOINT 是保留后缀
-      type: string
-      default: ""                     # 空 → Blackhole Exporter，零成本（§7.5）
-    iamJwksUrl:                       # ⚠️ 真正意义上的自引用（同 infra-authz 的
-      type: string                    # authzBundleUrl，不是它那种"名字长得像但指向
-                                       # 外部"的情形）：/api/iam/logout 用
-                                       # besdk.Authenticated，而全系统验应用 token
-                                       # 唯一的 JWKS 来源就是本组件自己的
-                                       # /.well-known/jwks.json——必须把这一项配置成
-                                       # 指向自己，否则 verifier 为 nil，logout 会
-                                       # fail-closed 403（be-sdk-go authz.go 的既有
-                                       # 判定链）。留空是合法的阶段性状态（同其余
-                                       # 组件的 iamJwksUrl 默认留空）
-      default: ""
-    casdoorBaseUrl:                   # Casdoor 官方镜像是带外容器（形态 B），地址走配置项，
-      type: string                    # 不是依赖边。brickkit 管理的容器要用 host.docker.internal
-                                       # 才能连到宿主机上跑的带外容器（同 postgres-shared/
-                                       # nats-shared 两个基础资源的既有先例）
-    casdoorAdminUsername:             # 首次初始化调 Casdoor 管理 API（建组织/应用/webhook）
-      type: string                    # 用的身份——Casdoor 管理 API 是会话 cookie 认证，不是
-      default: admin                  # 走应用级 OIDC。"admin" 是 Casdoor 官方镜像的默认组织内
-                                       # 置管理员用户名（属于 built-in 组织）
-    casdoorAdminPassword:             # ⚠️ 必填、无默认值——同 POSTGRES_PASSWORD/
-      type: string                    # STORAGE_SECRET_KEY 一个级别的敏感值，不能给一个大家
-                                       # 都知道的默认密码当兜底
-    casdoorOrgName:                   # 本次装配要用的 Casdoor 组织名——首次初始化时若不存在则
-      type: string                    # 创建。不用 built-in（那是 Casdoor 自己的内置管理组织，
-      default: brickkit                # 见 §9：往 built-in 建普通用户默认被拒）
-    casdoorAppName:                   # 首次初始化时若不存在则创建，登录页/OIDC 客户端配置都挂
-      type: string                    # 在这个应用上
-      default: brickkit-app
-    webhookSharedSecret:              # ⚠️ 必填、无默认值。Casdoor 的 webhook 没有内置签名，
-      type: string                    # 只能靠"自定义 header 里放一个共享密钥"这条路自己校验
-                                       # （真机核对过 Casdoor 的 Webhook 对象确实支持自定义
-                                       # header，见 AGENTS.md）。漏了校验等于开了一个任何人
-                                       # 都能伪造用户事件的口子
-    webhookCallbackUrl:               # Casdoor（带外容器）回调本组件用的地址——不能自动推导，
-      type: string                    # 取决于具体部署的 Docker 网络拓扑（真机核对过：Casdoor
-      default: ""                     # 所在的桥接网络够不到 host.docker.internal，要用桥接网关
-                                       # IP + 本组件 expose 出来的宿主机端口，见 AGENTS.md 的
-                                       # 网络拓扑记录）。留空表示跳过 webhook 自举这一步——常见
-                                       # 于本组件还没规划好带外网络地址的早期开发阶段，不算错误
-    appTokenSigningKeyPem:            # 应用 token 的当前签名私钥，PEM 格式。⚠️ 必填、无默认值，
-      type: string                    # 且**不自己生成**——合并部署时多个模块同进程，自己生成
-                                       # 会让每次重启都换密钥。Manifest 没有 volumes 字段
-                                       # （§6.3），只能走配置项注入，与数据库密码同级对待
-    appTokenPreviousPublicKeyPem:     # 密钥轮换用：换了新私钥之后，把上一把公钥留在这里一段
-      type: string                    # 时间——JWKS 端点同时挂新旧两把公钥（kid 区分），旧 token
-      default: ""                     # 在 TTL 内仍可验签，不做就是一次"全员被登出"（设计计划
-                                       # §3.3）。留空表示当前只有一把在用的钥匙
-    appTokenTtlSeconds:               # ⚠️ 必须与 infra-authz 的 accessTokenTtlSeconds 保持一致——
-      type: integer                   # stale_since 窗口按它算，两边对不上窗口就算错
-      default: 600
-    refreshTokenTtlSeconds:           # refresh token 的有效期，rotation 语义（§14.1.6：每次
-      type: integer                   # 刷新轮换，不是滑动续期）。默认 7 天——比应用 token 长
-      default: 604800                 # 得多是刻意的：应用 token 短命是为了角色变更能尽快生效，
-                                       # refresh token 长命是为了不用天天重新登录，两者服务的
-                                       # 是不同的目标，没有耦合的理由
-    enabledComponents:                # /api/tenant/features 的数据来源——be-ops 生成
-      type: string                    # brickkit.yaml 时写进来的逗号分隔组件清单。⚠️ 必须是
-      default: ""                     # 逗号分隔字符串，不能写 YAML 数组（数组会被平台渲染成
-                                       # "[a b c]"，导读第 7 条）。平台不校验内容，喂错了不会
-                                       # 有任何运行时失败，只会让前端少几个菜单
+    PG_HOST: {type: string}
+    PG_PORT: {type: string, default: "5432"}
+    PG_DATABASE: {type: string}
+    PG_USER: {type: string}
+    PG_PASSWORD: {type: string, secret: true}
+    PG_SCHEMA: {type: string, default: infra_iam_casdoor}
+    NATS_URL: {type: string}
+    OTEL_BASE_URL: {type: string, default: ""}
+    IAM_JWKS_URL: {type: string}
+    CASDOOR_BASE_URL: {type: string}
+    CASDOOR_ADMIN_USERNAME: {type: string, default: admin}
+    CASDOOR_ADMIN_PASSWORD: {type: string, secret: true}
+    CASDOOR_ORG_NAME: {type: string, default: brickkit}
+    CASDOOR_APP_NAME: {type: string, default: brickkit-app}
+    WEBHOOK_SHARED_SECRET: {type: string, secret: true}
+    WEBHOOK_CALLBACK_URL: {type: string, default: ""}
+    APP_TOKEN_SIGNING_KEY_PEM: {type: string, secret: true}
+    APP_TOKEN_PREVIOUS_PUBLIC_KEY_PEM: {type: string, default: ""}
+    APP_TOKEN_TTL_SECONDS: {type: integer, default: 600}
+    REFRESH_TOKEN_TTL_SECONDS: {type: integer, default: 604800}
+    ENABLED_COMPONENTS: {type: string}
+  required: [PG_HOST, PG_DATABASE, PG_USER, PG_PASSWORD, NATS_URL, IAM_JWKS_URL, CASDOOR_BASE_URL, CASDOOR_ADMIN_PASSWORD, WEBHOOK_SHARED_SECRET, APP_TOKEN_SIGNING_KEY_PEM, ENABLED_COMPONENTS]
 
 deployment:
   type: container
-  image: brickenterprise/infra-iam-casdoor:1.0.10
-  port: 8200                          # 端口册 registry/ports.tsv
+  build: {context: ., dockerfile: Dockerfile}
+  port: 8200
   extraPorts:
-    - { name: grpc, port: 9200 }      # → INFRA_IAM_CASDOOR_GRPC_ENDPOINT（值仍以 http:// 开头）
-  labels:                             # 平台只搬运，不解释键值。值必须是字符串
+    - {name: grpc, port: 9200}
+  labels:
     prometheus.io/scrape: "true"
-    # prometheus.io/port 原来写在这里——阶段四附加 Task 0.1 真机验证
-    # servedBy 时发现这个标签会跟同外壳其它成员的 prometheus.io/port 撞车
-    # 报错（每个组件的值天然不同，servedBy 的 labels 合并规则没有像 env
-    # 变量合并那样排除这类"语义上必然因组件而异"的标签，已反馈给 brickKit，
-    # 见装配仓库 docs/dev/brickKit反馈-servedBy的labels合并漏了排除规则.md）。
-    # 在 brickKit 修复或给出结论之前，暂时从这里删掉，只在合并后的外壳
-    # 自己的条目上保留一份——跟"合并后指标只能走一个共享抓取端口"这个
-    # 事实本来就一致，不是单纯绕过。
-    prometheus.io/path: "/metrics"
+    prometheus.io/path: /metrics
   resources:
-    requests: { cpu: "150m", memory: "192Mi" }
+    requests: {cpu: 150m, memory: 192Mi}
 
 migration:
-  command: ["./migrate", "up"]
+  command: [./migrate, up]
 
 healthCheck:
   type: http
-  path: /healthz                      # ⚠️ 只查本进程存活，严禁查库、查 infra-authz、查 Casdoor（§12.3.6）
-  # startPeriodSeconds 不写：默认就是 60，Go 组件够用（§12.3.5）
+  path: /healthz
+
+local:
+  language: go
+  runCommand: [go, run, ./backend/cmd/server]

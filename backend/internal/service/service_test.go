@@ -16,12 +16,13 @@ import (
 	"time"
 
 	"github.com/MicahParks/jwkset"
+	besdk "github.com/brickKit/be-sdk-go"
 	"github.com/golang-jwt/jwt/v5"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // §12.4：不用 lib/pq，驱动名注册为 "pgx"
 
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/casdoor"
-	"github.com/brickKit/infra-iam-casdoor/backend/internal/repo"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/repo"
 )
 
 func testDB(t *testing.T) *sql.DB {
@@ -58,10 +59,18 @@ func testSigningKey(t *testing.T) *rsa.PrivateKey {
 // （测试需要真的验一个 Casdoor id_token 时用 fakeCasdoorJWKS 另外挂）。
 func newTestService(t *testing.T) (*Service, *repo.Repo) {
 	t.Helper()
+	return newTestServiceWithConfig(t, besdk.NewConfig(nil))
+}
+
+// newTestServiceWithConfig 同 newTestService，但用调用方给的 Config——端到端
+// 测试要把 infra-authz 的地址以 INFRA_AUTHZ_GRPC_ENDPOINT 放进去（SystemClient
+// 读 Config，不读进程环境）。
+func newTestServiceWithConfig(t *testing.T, cfg besdk.Config) (*Service, *repo.Repo) {
+	t.Helper()
 	db := testDB(t)
 	r := repo.New(db, "infra_iam_casdoor_rw", "infra_iam_casdoor")
 	signingKey := testSigningKey(t)
-	svc := New(r, "infra_iam_casdoor", signingKey, "test-kid", nil, "",
+	svc := New(r, cfg, "infra_iam_casdoor", signingKey, "test-kid", nil, "",
 		10*time.Minute, 7*24*time.Hour, []string{"mdm/customer", "erp/sales"},
 		"shared-secret-for-test", "X-Shared-Secret")
 	return svc, r
@@ -185,9 +194,9 @@ func TestExchangeTokenAndRefreshToken_端到端对着真实infra_authz走一遍(
 	if endpoint == "" {
 		t.Skip("未设置 TEST_INFRA_AUTHZ_GRPC_ENDPOINT，跳过端到端测试")
 	}
-	t.Setenv("INFRA_AUTHZ_GRPC_ENDPOINT", endpoint) // besdk.SystemClient 直接读这个环境变量
-
-	svc, _ := newTestService(t)
+	svc, _ := newTestServiceWithConfig(t, besdk.NewConfig(map[string]string{
+		"INFRA_AUTHZ_GRPC_ENDPOINT": endpoint, // besdk.SystemClient 从 Config 读依赖地址
+	}))
 	fake := newFakeCasdoorJWKS(t)
 	svc.SetIDVerifier(fake.verifier(t))
 
@@ -309,4 +318,3 @@ func TestWebhookSharedSecretValid(t *testing.T) {
 		t.Fatal("空字符串不该通过（哪怕共享密钥本身配置错误变成空）")
 	}
 }
-
