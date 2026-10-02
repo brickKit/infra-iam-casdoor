@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 )
 
@@ -112,5 +114,47 @@ func TestExchangeToken_Casdoor里停用的人不能拿旧id_token换新会话_�
 	deliver(t, svc, deliveryWithObject(t, "update-user", map[string]any{"id": sub}))
 	if _, err := svc.ExchangeToken(ctx, idToken); err != nil {
 		t.Fatalf("重新启用后应能登录，实际 %v", err)
+	}
+}
+
+// Casdoor id_token 的 aud 必须是本组件信任的应用：同一个 Casdoor 里别的应用（含内置的
+// app-built-in）签给用户的 id_token 不能换出本项目的应用 token（发布前审查 I3）。
+func TestExchangeToken_只认可信应用签给用户的id_token(t *testing.T) {
+	const extra = "extra-trusted-client-id"
+	for _, tc := range []struct {
+		name string
+		aud  jwt.ClaimStrings
+		ok   bool
+	}{
+		{"本组件的应用", jwt.ClaimStrings{testClientID}, true},
+		{"CASDOOR_EXTRA_CLIENT_IDS 里的应用", jwt.ClaimStrings{extra}, true},
+		{"别的应用", jwt.ClaimStrings{"another-casdoor-app"}, false},
+		{"没有 aud", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := newServiceWithAuthz(t, time.Hour)
+			svc.SetAudienceSource(func(context.Context) ([]string, error) { return []string{testClientID, extra}, nil })
+			fake := newFakeCasdoorJWKS(t)
+			svc.SetIDVerifier(fake.verifier(t))
+			_, err := svc.ExchangeToken(context.Background(), fake.signFor(t, uniqueID("sub"), tc.aud))
+			switch {
+			case tc.ok && err != nil:
+				t.Fatalf("aud=%v 应能换 token，实际 %v", tc.aud, err)
+			case !tc.ok && !errors.Is(err, ErrUnauthenticated):
+				t.Fatalf("aud=%v 期望 ErrUnauthenticated（401），实际 %v", tc.aud, err)
+			}
+		})
+	}
+}
+
+// 本组件 Casdoor 应用的 client ID 还不知道（启动对账从没成功过）：换 token 回 503，
+// 不是 401——id_token 本身可能没问题，只是这一刻判断不了它是不是给本项目的。
+func TestExchangeToken_还不知道应用的clientID时回Unavailable(t *testing.T) {
+	svc, _ := newServiceWithAuthz(t, time.Hour)
+	svc.SetAudienceSource(func(context.Context) ([]string, error) { return nil, nil })
+	fake := newFakeCasdoorJWKS(t)
+	svc.SetIDVerifier(fake.verifier(t))
+	if _, err := svc.ExchangeToken(context.Background(), fake.sign(t, uniqueID("sub"))); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("期望 ErrUnavailable（503），实际 %v", err)
 	}
 }

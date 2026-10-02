@@ -44,6 +44,17 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 	// adminClientHolder 由 Start() 登录成功后填入，gRPC handler 每次调用
 	// 时才 Load()——见 grpc.go 顶部注释，RegisterGRPC 与 Start() 是并发
 	// 起步的两件事，构造这一刻登录多半还没完成。
+	// 换 token 时信任的 Casdoor 应用：本组件的应用（client ID 由启动对账记进 bootstrap_state，
+	// 每次换 token 现读，对账改了它也立刻生效）在前，CASDOOR_EXTRA_CLIENT_IDS 在后。本组件的
+	// 应用还不知道时返回空，换 token 回 503。
+	svc.SetAudienceSource(func(ctx context.Context) ([]string, error) {
+		id, err := r.AppClientID(ctx)
+		if err != nil || id == "" {
+			return nil, err
+		}
+		return append([]string{id}, cfg.extraClientIDs...), nil
+	})
+
 	var adminClientHolder atomic.Pointer[casdoor.AdminClient]
 	// 投递队列回读用户当前状态用的也是这条会话。⚠️ 没登录时必须返回
 	// nil 接口，不能把 nil 的 *AdminClient 装进接口（那是一个非 nil 的接口值）。

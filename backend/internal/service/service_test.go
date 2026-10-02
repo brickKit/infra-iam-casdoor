@@ -84,9 +84,11 @@ var fastQueueTiming = queueTiming{
 }
 
 // forTest 让 svc 的投递队列只认领本测试登记的投递（dedupFor 起的键），等待换成毫秒级。
+// 换 token 信任 testClientID。
 func forTest(svc *Service) {
 	svc.claimPrefix = uniqueID("q") + ":"
 	svc.queue = fastQueueTiming
+	svc.SetAudienceSource(func(context.Context) ([]string, error) { return []string{testClientID}, nil })
 }
 
 // fakeCasdoorJWKS 是"自己签发、自己验签"的测试夹具（同 be-sdk-go
@@ -133,11 +135,22 @@ func (f *fakeCasdoorJWKS) verifier(t *testing.T) *casdoor.IDTokenVerifier {
 	return v
 }
 
+// testClientID 是测试里"本组件 Casdoor 应用"的 client ID：forTest 让 Service 信任它，
+// sign 签的 id_token 的 aud 就是它。
+const testClientID = "test-brickkit-app-client-id"
+
 func (f *fakeCasdoorJWKS) sign(t *testing.T, sub string) string {
+	t.Helper()
+	return f.signFor(t, sub, jwt.ClaimStrings{testClientID})
+}
+
+// signFor 签一个 aud 由调用方给的 id_token（nil = 不带 aud）。
+func (f *fakeCasdoorJWKS) signFor(t *testing.T, sub string, aud jwt.ClaimStrings) string {
 	t.Helper()
 	claims := jwt.RegisteredClaims{
 		Subject:   sub,
 		Issuer:    f.issuer,
+		Audience:  aud,
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 	}

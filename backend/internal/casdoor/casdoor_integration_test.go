@@ -138,12 +138,17 @@ func TestAdminClient与IDTokenVerifier_真机走一遍完整流程(t *testing.T)
 	if err != nil {
 		t.Fatalf("构造验证器失败：%v", err)
 	}
-	sub, err := v.Verify(idToken)
+	sub, err := v.Verify(idToken, []string{tokenApp.ClientID})
 	if err != nil {
 		t.Fatalf("验签真实 Casdoor id_token 失败：%v", err)
 	}
 	if sub == "" {
 		t.Fatal("验签成功但 sub 为空")
+	}
+	// 真实 Casdoor 的 id_token 的 aud 是签发它的应用的 client ID：别的应用的 client ID
+	// 不信任它（发布前审查 I3）。
+	if _, err := v.Verify(idToken, []string{"some-other-application-client-id"}); err == nil {
+		t.Fatal("aud 不是可信的 client ID 时应该验签失败")
 	}
 
 	// ── GetUserBySub：gRPC BatchGetUsers 真正会跑的那一步 ────────────
@@ -177,7 +182,7 @@ func TestAdminClient与IDTokenVerifier_真机走一遍完整流程(t *testing.T)
 	// Casdoor 内部的用户 UUID，不会因为重新登录而改变（真机核对过；这里把它
 	// 钉成一条可回归的断言）。
 	idToken2 := passwordGrantIDToken(t, base, tokenApp.ClientID, tokenApp.ClientSecret, userName, "Passw0rd!")
-	sub2, err := v.Verify(idToken2)
+	sub2, err := v.Verify(idToken2, []string{tokenApp.ClientID})
 	if err != nil {
 		t.Fatalf("第二次验签失败：%v", err)
 	}
@@ -241,7 +246,7 @@ func TestIDTokenVerifier_拒绝错误issuer(t *testing.T) {
 	tokenApp := createTestAppWithPasswordGrant(ctx, t, c, tokenAppName, builtInOrg)
 	idToken := passwordGrantIDToken(t, base, tokenApp.ClientID, tokenApp.ClientSecret, adminUser, adminPass)
 
-	if _, err := v.Verify(idToken); err == nil {
+	if _, err := v.Verify(idToken, []string{tokenApp.ClientID}); err == nil {
 		t.Fatal("issuer 不匹配时应该验签失败")
 	}
 }

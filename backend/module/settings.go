@@ -23,6 +23,7 @@ type settings struct {
 	casdoorAdminPassword string
 	casdoorOrgName       string
 	casdoorAppName       string
+	extraClientIDs       []string // CASDOOR_EXTRA_CLIENT_IDS：换 token 时也信任这些 Casdoor 应用签的 id_token
 
 	webhookSharedSecret string
 	webhookCallbackURL  string
@@ -68,6 +69,11 @@ func loadSettings(cfg besdk.Config) (settings, error) {
 	s.casdoorAdminPassword, _ = cfg.String("CASDOOR_ADMIN_PASSWORD")
 	s.casdoorOrgName = cfg.StringOr("CASDOOR_ORG_NAME", "brickkit")
 	s.casdoorAppName = cfg.StringOr("CASDOOR_APP_NAME", "brickkit-app")
+	for _, id := range strings.Split(cfg.StringOr("CASDOOR_EXTRA_CLIENT_IDS", ""), ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			s.extraClientIDs = append(s.extraClientIDs, id)
+		}
+	}
 	s.webhookSharedSecret, _ = cfg.String("WEBHOOK_SHARED_SECRET")
 	s.webhookCallbackURL = cfg.StringOr("WEBHOOK_CALLBACK_URL", "")
 

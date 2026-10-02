@@ -9,7 +9,8 @@ import (
 )
 
 // IDTokenVerifier 验证浏览器换来的 Casdoor 身份 token（POST
-// /api/iam/token 的入参）——只信 RS256、只信发现文档给出的 issuer，用
+// /api/iam/token 的入参）——只信 RS256、只信发现文档给出的 issuer、只信签给可信应用的
+// （aud，见 Verify），用
 // keyfunc 挂 Casdoor 自己的 JWKS（同 be-sdk-go 的 jwtVerifier 用一样的
 // 库，两处的"信任第三方签的 JWT"是同一类问题，没必要用两套实现）。
 type IDTokenVerifier struct {
@@ -37,15 +38,24 @@ func NewIDTokenVerifier(ctx context.Context, jwksURI, issuer string) (*IDTokenVe
 	return &IDTokenVerifier{kf: kf, issuer: issuer}, nil
 }
 
-// Verify 验签 + 校验 issuer，返回 sub。⚠️ 只认 RS256——Casdoor 的发现
+// Verify 验签 + 校验 issuer 与 audience，返回 sub。⚠️ 只认 RS256——Casdoor 的发现
 // 文档列出的 id_token_signing_alg_values_supported 里还有 ES256 等
 // 曲线算法，本组件不打算支持它们（RS256 是默认且最广泛支持的一种，
 // 换算法属于 Casdoor 侧的配置变更，届时再扩），显式白名单防算法混淆。
-func (v *IDTokenVerifier) Verify(tokenString string) (sub string, err error) {
+//
+// audiences 是信任的 Casdoor 应用 client ID（本组件的应用，加上 CASDOOR_EXTRA_CLIENT_IDS），
+// id_token 的 aud 至少要含其中一个。为空时一律拒绝。
+func (v *IDTokenVerifier) Verify(tokenString string, audiences []string) (sub string, err error) {
+	if len(audiences) == 0 {
+		return "", fmt.Errorf("没有可信的 client ID，拒绝验签")
+	}
 	var claims idTokenClaims
 	token, err := jwt.ParseWithClaims(tokenString, &claims, v.kf.Keyfunc,
 		jwt.WithValidMethods([]string{"RS256"}),
-		jwt.WithIssuer(v.issuer))
+		jwt.WithIssuer(v.issuer),
+		// ⚠️ 不校验 aud 的话，同一个 Casdoor 里任何应用（含内置的 app-built-in）签给用户的
+		// id_token 都能换出本项目的应用 token：一个拿到用户 id_token 的别的应用可以冒充他。
+		jwt.WithAudience(audiences...))
 	if err != nil {
 		return "", fmt.Errorf("验签失败: %w", err)
 	}

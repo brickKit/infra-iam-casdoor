@@ -55,3 +55,19 @@ func (r *Repo) MarkBootstrapStepDone(ctx context.Context, step string, detail js
 	})
 	return wrap("登记自举步骤完成", err)
 }
+
+// AppClientID 是启动对账记下的本组件 Casdoor 应用的 client ID（bootstrap_state 的
+// casdoor_app 一步）；对账从没成功过时返回 ""。换 token 时用它校验 id_token 的 aud。
+func (r *Repo) AppClientID(ctx context.Context) (string, error) {
+	step, err := r.GetBootstrapStep(ctx, "casdoor_app")
+	if err != nil || !step.Done || len(step.Detail) == 0 {
+		return "", err
+	}
+	var detail struct {
+		ClientID string `json:"clientId"`
+	}
+	if err := json.Unmarshal(step.Detail, &detail); err != nil {
+		return "", wrap("解析 casdoor_app 的 detail", err)
+	}
+	return detail.ClientID, nil
+}

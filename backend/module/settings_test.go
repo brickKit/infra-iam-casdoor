@@ -129,3 +129,22 @@ func TestLoadSettings_PEM不对时报错点名配置键(t *testing.T) {
 		}
 	}
 }
+
+// CASDOOR_EXTRA_CLIENT_IDS：默认空（只信本组件自己的 Casdoor 应用）；逗号分隔，忽略空白与空项。
+func TestLoadSettings_额外信任的client_ID按逗号拆分且默认为空(t *testing.T) {
+	s, err := loadSettings(besdk.NewConfig(validConfig(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.extraClientIDs) != 0 {
+		t.Fatalf("默认应为空，实际 %q", s.extraClientIDs)
+	}
+	m := validConfig(t)
+	m["CASDOOR_EXTRA_CLIENT_IDS"] = " local-dev-seed-app, ,mobile-app ,"
+	if s, err = loadSettings(besdk.NewConfig(m)); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(s.extraClientIDs, []string{"local-dev-seed-app", "mobile-app"}) {
+		t.Fatalf("拆分结果不对：%q", s.extraClientIDs)
+	}
+}

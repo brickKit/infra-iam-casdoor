@@ -39,10 +39,16 @@ type Service struct {
 	sharedSecret string            // webhook 共享密钥
 	sharedHeader string            // 共享密钥所在的 header 名
 	users        func() UserReader // 投递队列回读用户当前状态用；返回 nil = Casdoor 管理会话还没就绪
+	audiences    AudienceSource    // 换 token 时信任哪些 Casdoor 应用的 id_token
 	queue        queueTiming       // 投递队列的时间参数（queue.go）
 	wake         chan struct{}     // 新登记的投递唤醒本进程的处理循环
 	claimPrefix  string            // 只认领 dedup_key 以它开头的投递；生产为空，测试用来隔离
 }
+
+// AudienceSource 给出换 token 时信任的 Casdoor 应用 client ID：本组件的应用（启动对账
+// 记在 bootstrap_state 里）在前，后面是 CASDOOR_EXTRA_CLIENT_IDS。本组件的应用还不知道
+// （启动对账从没成功过）时返回空，换 token 回 503。
+type AudienceSource func(ctx context.Context) ([]string, error)
 
 // UserReader 是 webhook 投递回读用户当前状态用的 Casdoor 查询，*casdoor.AdminClient
 // 满足它。查不到用户返回 (nil, nil)。
@@ -82,6 +88,9 @@ func New(r *repo.Repo, cfg besdk.Config, schema string, signingKey *rsa.PrivateK
 // （允许晚于 New 若干秒——Casdoor 可能比本组件启动得晚）。
 func (s *Service) SetIDVerifier(v *casdoor.IDTokenVerifier) { s.idVerifier.Store(v) }
 
+// SetAudienceSource 由 module 在构造后调用一次。
+func (s *Service) SetAudienceSource(f AudienceSource) { s.audiences = f }
+
 // SetUserReader 由 module 在构造后调用一次：投递队列每一轮调用 f，返回当前的 Casdoor
 // 管理会话（后台登录成功之前返回 nil，这时队列不认领任何投递）。
 func (s *Service) SetUserReader(f func() UserReader) { s.users = f }
@@ -115,7 +124,17 @@ func (s *Service) ExchangeToken(ctx context.Context, casdoorIDToken string) (*To
 	if v == nil {
 		return nil, fmt.Errorf("%w: Casdoor 验证器尚未就绪", ErrUnavailable)
 	}
-	sub, err := v.Verify(casdoorIDToken)
+	var audiences []string
+	if s.audiences != nil {
+		var err error
+		if audiences, err = s.audiences(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if len(audiences) == 0 {
+		return nil, fmt.Errorf("%w: 还不知道本组件 Casdoor 应用的 client ID（启动对账还没成功过）", ErrUnavailable)
+	}
+	sub, err := v.Verify(casdoorIDToken, audiences)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrUnauthenticated, err.Error())
 	}
