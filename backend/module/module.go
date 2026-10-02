@@ -1,5 +1,5 @@
-// Package module 是 infra-iam-casdoor 唯一的装配入口（全局约束 §K、
-// 设计书 §12.5.1、§13.3 铁律七）。单跑与合并走同一个 New 函数；模块
+// Package module 是 infra-iam-casdoor 唯一的装配入口。单跑与进外壳走同一个
+// New 函数；模块
 // 只交回零件，谁去 Listen、谁开池、谁 init OTel、谁装信号处理器，全归
 // 调用方。
 package module
@@ -16,13 +16,14 @@ import (
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/consumer"
 	grpcapi "github.com/brickKit/infra-iam-casdoor/v2/backend/internal/grpc"
 	httpapi "github.com/brickKit/infra-iam-casdoor/v2/backend/internal/http"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/partition"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/repo"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/service"
 )
 
 const webhookSharedSecretHeader = "X-Shared-Secret"
 
-// New 构造 infra-iam-casdoor 模块。签名一个字都不许改（§12.5.1）。
+// New 构造 infra-iam-casdoor 模块。签名一个字都不许改：外壳按这个签名登记成员。
 func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 	// ⚠️ 配置只从 rt.Config 来，模块里零 os.Getenv（进外壳后成员共用一个进程环境）。
 	cfg, err := loadSettings(rt.Config)
@@ -49,22 +50,24 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 		HTTPHandler: eng,
 
 		// ⚠️ gRPC 一个不省，而且由调用方在 extraPorts["grpc"] 上 Listen
-		// （§1.5 原则一）。
+		// （每个声明的端口都必须真的在听）。
 		RegisterGRPC: func(gs *grpc.Server) {
 			iamv1.RegisterIamServiceServer(gs, grpcapi.New(&adminClientHolder, cfg.enabledComponents))
 		},
 
 		// Start：登记签名密钥元数据；后台连 Casdoor 管理 API 并跑一遍自举对账、
 		// 后台做 OIDC 发现（两者都重试直到成功——Casdoor 可能比本组件起得晚，
-		// 暂时不可达不该让本组件启动失败）；起 Outbox 推送与事件消费两个常驻循环。
+		// 暂时不可达不该让本组件启动失败）；起 Outbox 推送、事件消费、分区维护三个
+		// 常驻循环。
 		Start: func(ctx context.Context) error {
 			registerSigningKeys(ctx, svc, cfg, rt.Logger)
 			go connectCasdoorAdmin(ctx, cfg, r, &adminClientHolder, rt.Logger)
 			go discoverIDTokenVerifier(ctx, cfg.casdoorBaseURL, svc, rt.Logger)
 
-			errCh := make(chan error, 2)
+			errCh := make(chan error, 3)
 			go func() { errCh <- besdk.StartOutboxPump(ctx, rt.DB, cfg.schema, rt.NATS, rt.Logger) }()
 			go func() { errCh <- consumer.Start(ctx, rt.DB, cfg.role, cfg.schema, rt.NATS, rt.Logger) }()
+			go func() { errCh <- partition.Start(ctx, rt.DB, cfg.role, cfg.schema, rt.Logger) }()
 
 			select {
 			case <-ctx.Done():
