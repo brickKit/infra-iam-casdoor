@@ -39,7 +39,7 @@ type Service struct {
 	sharedHeader string     // 共享密钥所在的 header 名
 }
 
-// New 构造 Service。currentPub/currentKid 恒非空（appTokenSigningKeyPem
+// New 构造 Service。currentPub/currentKid 恒非空（APP_TOKEN_SIGNING_KEY_PEM
 // 是必填项）；previousPub/previousKid 任一为空表示当前只有一把在用的
 // 钥匙（密钥轮换的非轮换态）。
 func New(r *repo.Repo, cfg besdk.Config, schema string, signingKey *rsa.PrivateKey, currentKid string,

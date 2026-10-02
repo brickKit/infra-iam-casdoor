@@ -120,10 +120,10 @@ func discoverIDTokenVerifier(ctx context.Context, casdoorBaseURL string, svc *se
 			// ⚠️ 真机踩出来的坑：不能把发现文档给出的 jwks_uri 原样拿去连。
 			// Casdoor 的 origin 配置是**部署级全局唯一值**，同一份发现文档
 			// 会被至少两类调用方消费——本组件（brickkit 管理的容器，只能
-			// 用 casdoorBaseUrl 那种地址够到 Casdoor）与人在宿主机上直接
+			// 用 CASDOOR_BASE_URL 那种地址够到 Casdoor）与人在宿主机上直接
 			// 测试用的 curl/集成测试（只能用宿主机能解析的地址）——两者
 			// 需要的 host:port 往往不同，origin 只能二选一。把 jwks_uri
-			// 的 host 部分强制换成 casdoorBaseUrl 自己的（本组件已经用它
+			// 的 host 部分强制换成 CASDOOR_BASE_URL 自己的（本组件已经用它
 			// 成功拉到了这份发现文档，天然可达），只留发现文档给出的路径
 			// ——issuer 字符串本身不换（它是签名里的身份声明，不是网络
 			// 地址，不需要能连得上）。

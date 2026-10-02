@@ -13,7 +13,7 @@ type SigningKey struct {
 }
 
 // UpsertSigningKey 幂等登记一把签名密钥的元数据——启动时对
-// appTokenSigningKeyPem/appTokenPreviousPublicKeyPem 各算一次 kid（公钥
+// APP_TOKEN_SIGNING_KEY_PEM / APP_TOKEN_PREVIOUS_PUBLIC_KEY_PEM 各算一次 kid（公钥
 // JWK thumbprint）后调用（设计计划 §3.3、§9 第 1b 条）。kid 是确定性
 // 推导出来的（同一把钥匙每次启动都算出同一个 kid），ON CONFLICT DO
 // NOTHING 保证重复调用不覆盖 not_before——它记的是"第一次被观测到"的

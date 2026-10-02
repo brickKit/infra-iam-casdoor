@@ -21,7 +21,7 @@ import (
 func ParsePrivateKeyPEM(pemText string) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode([]byte(pemText))
 	if block == nil {
-		return nil, fmt.Errorf("appTokenSigningKeyPem 不是合法的 PEM")
+		return nil, fmt.Errorf("不是合法的 PEM")
 	}
 	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
 		return key, nil
@@ -32,19 +32,19 @@ func ParsePrivateKeyPEM(pemText string) (*rsa.PrivateKey, error) {
 	}
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("appTokenSigningKeyPem 不是 RSA 私钥")
+		return nil, fmt.Errorf("不是 RSA 私钥")
 	}
 	return rsaKey, nil
 }
 
-// ParsePublicKeyPEM 解析 PKIX 编码的 RSA 公钥 PEM（appTokenPreviousPublicKeyPem
+// ParsePublicKeyPEM 解析 PKIX 编码的 RSA 公钥 PEM（APP_TOKEN_PREVIOUS_PUBLIC_KEY_PEM
 // 用——密钥轮换期间只需要旧公钥来验签，不需要旧私钥）。也接受 x509 证书
-// PEM（取证书里的公钥），方便直接从"上一版 appTokenSigningKeyPem 对应的
+// PEM（取证书里的公钥），方便直接从"上一版 APP_TOKEN_SIGNING_KEY_PEM 对应的
 // 证书"复制过来，不强制运维人员单独导出一份裸公钥。
 func ParsePublicKeyPEM(pemText string) (*rsa.PublicKey, error) {
 	block, _ := pem.Decode([]byte(pemText))
 	if block == nil {
-		return nil, fmt.Errorf("appTokenPreviousPublicKeyPem 不是合法的 PEM")
+		return nil, fmt.Errorf("不是合法的 PEM")
 	}
 	if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
 		if pub, ok := cert.PublicKey.(*rsa.PublicKey); ok {
@@ -58,7 +58,7 @@ func ParsePublicKeyPEM(pemText string) (*rsa.PublicKey, error) {
 	}
 	rsaPub, ok := pub.(*rsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("appTokenPreviousPublicKeyPem 不是 RSA 公钥")
+		return nil, fmt.Errorf("不是 RSA 公钥")
 	}
 	return rsaPub, nil
 }

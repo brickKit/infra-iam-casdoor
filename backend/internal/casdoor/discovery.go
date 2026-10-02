@@ -20,7 +20,7 @@ type oidcConfig struct {
 
 // DiscoverOIDC 走标准 OIDC Discovery（RFC 8414）取 issuer 与 jwks_uri。
 //
-// ⚠️ jwks_uri **不能**硬编码成 "<casdoorBaseUrl>/.well-known/jwks.json"
+// ⚠️ jwks_uri **不能**硬编码成 "<CASDOOR_BASE_URL>/.well-known/jwks.json"
 // ——真机核对过 Casdoor 实际发布的路径是 "/.well-known/jwks"（没有
 // .json 后缀，与本组件自己的 JWKS 端点路径恰好不同，容易想当然抄错）。
 // 走发现文档而不是硬编码，这个差异从一开始就不构成隐患。

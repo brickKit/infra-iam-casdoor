@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,5 +74,58 @@ func TestLoadSettings_齐全的配置按值解析(t *testing.T) {
 	}
 	if s.signingKey == nil || s.currentKid == "" || s.previousPub == nil || s.previousKid == "" || s.previousKid == s.currentKid {
 		t.Fatalf("两把钥匙没解析好：current=%q previous=%q", s.currentKid, s.previousKid)
+	}
+}
+
+// 缺 required 键时返回 error（并点名缺哪些），不 panic：进外壳后一个成员 panic
+// 会让同一进程里的全部成员一起退出。
+func TestLoadSettings_缺必填键返回error点名而不panic(t *testing.T) {
+	m := validConfig(t)
+	delete(m, "CASDOOR_ADMIN_PASSWORD")
+	delete(m, "WEBHOOK_SHARED_SECRET")
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("缺键时 panic 了：%v", r)
+			}
+		}()
+		_, err = loadSettings(besdk.NewConfig(m))
+	}()
+	if err == nil {
+		t.Fatal("缺必填键应该报错")
+	}
+	for _, k := range []string{"CASDOOR_ADMIN_PASSWORD", "WEBHOOK_SHARED_SECRET"} {
+		if !strings.Contains(err.Error(), k) {
+			t.Fatalf("报错应点名 %s：%v", k, err)
+		}
+	}
+}
+
+// 配了却不是整数的 TTL（"10m"、"600s"）不能悄悄退回默认值：值配了、组件却按
+// 默认值跑，从外面看不出来。
+func TestLoadSettings_TTL不是整数秒时报错而不是用默认值(t *testing.T) {
+	for _, key := range []string{"APP_TOKEN_TTL_SECONDS", "REFRESH_TOKEN_TTL_SECONDS"} {
+		for _, v := range []string{"10m", "600s", "0", "-5"} {
+			m := validConfig(t)
+			m[key] = v
+			if s, err := loadSettings(besdk.NewConfig(m)); err == nil {
+				t.Fatalf("%s=%q 应该报错，实际 access=%v refresh=%v", key, v, s.accessTTL, s.refreshTTL)
+			} else if !strings.Contains(err.Error(), key) {
+				t.Fatalf("报错应点名 %s：%v", key, err)
+			}
+		}
+	}
+}
+
+// PEM 解析失败的报错用的是配置键名（运维在 config/ 里找得到的名字）。
+func TestLoadSettings_PEM不对时报错点名配置键(t *testing.T) {
+	for _, key := range []string{"APP_TOKEN_SIGNING_KEY_PEM", "APP_TOKEN_PREVIOUS_PUBLIC_KEY_PEM"} {
+		m := validConfig(t)
+		m[key] = "not a pem"
+		_, err := loadSettings(besdk.NewConfig(m))
+		if err == nil || !strings.Contains(err.Error(), key) {
+			t.Fatalf("%s 不是 PEM 时应报错并点名这个键，实际 %v", key, err)
+		}
 	}
 }
