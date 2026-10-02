@@ -16,10 +16,14 @@
 # 到 sub，不需要发明交接协议。角色/部门归属由 infra-authz 自己的
 # seed.sh 负责（本脚本只管"这个人存在，能登录"）。
 #
-#   dev.superuser        「本地测试」超级测试用户   全权限，无部门归属
-#   dev.sales.east        「本地测试」销售-华东     dev_sales_rep 角色，华东分部
-#   dev.warehouse.south   「本地测试」仓管-华南     dev_warehouse_manager 角色，华南分部
-#   dev.finance.viewer    「本地测试」财务只读       dev_finance_viewer 角色，无部门归属
+#   dev.superuser        「本地测试」超级测试用户   全权限，根部门「本地测试」总公司（dept_path /1/）
+#   dev.sales.east        「本地测试」销售-华东     dev_sales_rep 角色，华东分部（/1/2/）
+#   dev.warehouse.south   「本地测试」仓管-华南     dev_warehouse_manager 角色，华南分部（/1/3/）
+#   dev.finance.viewer    「本地测试」财务只读       dev_finance_viewer 角色，无部门归属（dept_path 为空）
+#
+# 部门路径是新库里的 id（authz 按 总公司 → 华东 → 华南 的顺序建，路径是 /<id>/…/）。
+# dept_path 为空不是"看全部"：数据范围的 org 维对没分部门的人只剩本人；看全公司的人
+# 要分到根部门，dev.superuser 就是这样。
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

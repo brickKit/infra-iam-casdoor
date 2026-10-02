@@ -13,7 +13,7 @@ This component is the adapter in front of Casdoor, and the only member of the IA
 | Users, passwords, login page, OIDC flow, MFA, social login | Casdoor | Code this project does not write is not wrapped as a component. The browser talks to Casdoor directly; this component takes over only after authentication |
 | Role model, role permissions, user roles | `infra/authz` | Roles never live in Casdoor, so replacing the IAM implementation migrates no role data |
 | Checking a token or a permission on a request | the SDK in every component | Verification is a local computation against the JWKS and the bundle; this component is not on the request path |
-| The organisation tree | `infra/authz` for now, an organisation master-data component later | This component only copies the `dept_path` string into the token |
+| The organisation tree | `infra/authz` for now, an organisation master-data component later | This component only copies the `dept_path` string into the token, verbatim: an empty string (no department, which consumers scope to the owner alone) stays empty and is never turned into `"/"` (the whole tree) |
 | Notification preferences and addresses | `infra/notification` | It keeps its own copy from the user events |
 
 Every login method (password, WeChat, QQ, Google, and any Casdoor adds later) is configured in Casdoor: whatever the method, Casdoor produces the same OIDC id_token, and this component only knows that token. A self-registered or social account has **no roles** in authz, so its application token carries an empty `roles[]` and every business route answers `403` until an administrator grants a role. No role may be granted automatically to new accounts: that would turn sign-up into privilege escalation.
