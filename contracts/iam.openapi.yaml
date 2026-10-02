@@ -108,11 +108,13 @@ paths:
 
   /api/tenant/features:
     get:
-      summary: 本次装配启用了哪些组件
+      summary: 本项目装了哪些组件
       description: |
-        数据来源是 `be-ops` 生成 `brickkit.yaml` 时写进 `config.enabledComponents`
-        的逗号分隔字符串，本组件读 `ENABLED_COMPONENTS` 环境变量原样下发。
-        besdk.Public 是刻意的：前端还没登录就要用它决定渲染什么（设计计划 §3.1）。
+        数据来源是配置项 `ENABLED_COMPONENTS`，值是项目 `brickkit.yaml` 的内容
+        （config 里写 `file://brickkit.yaml`）：取 `components[].id`，跳过外壳
+        （`kind: shell`），同一组件的多个版本只算一次，按字典序排列。"装了"不等于
+        "在运行"：被部署文件关掉的组件同样在列。besdk.Public 是刻意的：前端还没
+        登录就要用它决定渲染什么。
       operationId: getTenantFeatures
       responses:
         "200":

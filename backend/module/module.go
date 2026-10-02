@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/bootstrap"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/consumer"
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/features"
 	grpcapi "github.com/brickKit/infra-iam-casdoor/v2/backend/internal/grpc"
 	httpapi "github.com/brickKit/infra-iam-casdoor/v2/backend/internal/http"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/keys"
@@ -47,7 +47,10 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 	appTokenPreviousPublicKeyPem := rt.Config.StringOr("APP_TOKEN_PREVIOUS_PUBLIC_KEY_PEM", "")
 	appTokenTTL := time.Duration(rt.Config.IntOr("APP_TOKEN_TTL_SECONDS", 600)) * time.Second
 	refreshTokenTTL := time.Duration(rt.Config.IntOr("REFRESH_TOKEN_TTL_SECONDS", 604800)) * time.Second
-	enabledComponents := splitNonEmpty(rt.Config.StringOr("ENABLED_COMPONENTS", ""), ",")
+	enabledComponents, err := features.FromLockfile(rt.Config.StringOr("ENABLED_COMPONENTS", ""))
+	if err != nil {
+		return nil, err
+	}
 
 	signingKey, currentKid, err := loadSigningKey(appTokenSigningKeyPem)
 	if err != nil {
@@ -199,19 +202,4 @@ func rebaseHost(rawURL, baseURL string) string {
 	}
 	u.Scheme, u.Host = b.Scheme, b.Host
 	return u.String()
-}
-
-// splitNonEmpty 把 enabledComponents 那种逗号分隔字符串拆开，过滤空
-// 段——防止配置里出现多余逗号（"a,,b"）时产出一个空字符串元素。
-func splitNonEmpty(raw, sep string) []string {
-	if raw == "" {
-		return nil
-	}
-	var out []string
-	for _, s := range strings.Split(raw, sep) {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
 }
