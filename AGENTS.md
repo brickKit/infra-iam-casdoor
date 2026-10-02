@@ -21,7 +21,7 @@ The AI guide to developing this component. How to use it, its boundaries and con
 | `backend/internal/casdoor/discovery.go` | OIDC discovery: issuer and `jwks_uri` |
 | `backend/internal/casdoor/idtoken.go` | Verifying Casdoor id_tokens (RS256 only, issuer checked) |
 | `backend/internal/bootstrap/` | Start-up reconciliation of the Casdoor organisation, application and webhook |
-| `backend/internal/repo/` | `refresh_tokens` (issue, rotate with reuse detection, revoke), `signing_keys`, `webhook_deliveries` (dedup under an advisory lock), `bootstrap_state` |
+| `backend/internal/repo/` | `refresh_tokens` (issue, rotate with reuse detection, revoke), `signing_keys`, `webhook_deliveries` (dedup under an advisory lock), `user_event_versions` (per-user event version, the row lock that orders read-backs), `bootstrap_state` |
 | `backend/internal/service/` | Token exchange, refresh, logout, webhook handling; sentinel errors and their gRPC status (`status.go`); shared by REST and gRPC |
 | `backend/internal/http/http.go` | REST routes, each registered through `besdk.GET` / `besdk.POST`; the webhook's shared-secret check; `dedupKeyFor` |
 | `backend/internal/grpc/grpc.go` | `infra.iam.v1.IamService`: `BatchGetUsers`, `GetTenantFeatures` |
@@ -37,7 +37,7 @@ The AI guide to developing this component. How to use it, its boundaries and con
 | What goes into the application token | `backend/internal/service/service.go` (`signAccessTokenFor`) | `backend/internal/tokens/tokens.go` (`Claims`), the authz contract package |
 | Refresh token rotation or reuse detection | `backend/internal/repo/refreshtokens.go` (`RotateRefreshToken`) | `backend/internal/service/service.go` (`RefreshToken`), `backend/internal/repo/repo_test.go` |
 | Signing key rotation | `backend/module/settings.go` | `backend/internal/tokens/tokens.go` (`NewVerifier`), `backend/internal/http/http_test.go` |
-| Parsing a Casdoor webhook | `backend/internal/service/webhook.go` | `backend/internal/repo/webhookdeliveries.go`, `contracts/events/iam.events.json` |
+| Parsing a Casdoor webhook, or what a user event says | `backend/internal/service/webhook.go` (`userRef`, `userEventFor`) | `backend/internal/service/service.go` (`HandleWebhookDelivery`), `backend/internal/repo/usereventversions.go`, `contracts/events/iam.events.json` |
 | What Casdoor objects are created at start | `backend/internal/bootstrap/bootstrap.go` | `backend/internal/casdoor/admin.go`, `backend/module/casdoor.go` |
 | The features list | `backend/internal/features/features.go` | `backend/internal/http/http.go` (`tenantFeaturesHandler`) |
 | An error answering with the wrong status | `backend/internal/service/status.go` | `backend/internal/service/errors.go` |
@@ -64,7 +64,8 @@ The Casdoor tests create organisations, applications, users and webhooks with ti
 
 - **Two tokens.** Casdoor's id_token only proves identity; the application token is signed here, with claims asked from `infra/authz` at that moment. Login and every refresh call `ResolveClaims`; nothing caches claims.
 - **Fail closed on authz.** While authz is unreachable, exchange and refresh answer `503`; the refresh is checked and the claims fetched before the rotation, so a failed refresh uses nothing up.
-- **No user table, no role table.** Users are read from Casdoor on demand (`BatchGetUsers`); roles live in authz.
+- **No user table, no role table.** Users are read from Casdoor on demand (`BatchGetUsers`, and every webhook delivery); roles live in authz. `user_event_versions` holds versions and names, no profile data.
+- **A delivery says who, Casdoor says what.** Every user event is the user read back from Casdoor at processing time, with a per-user version taken under a row lock before the read; delivery order doesn't matter.
 - **Casdoor is waited for, not required at start.** Admin login, reconciliation and OIDC discovery retry in the background; a Casdoor that is merely down logs at Warn, a Casdoor that rejects the request logs at Error once.
 - **Reconcile on every start** (`bootstrap`): look first, create what is missing, rewrite the webhook when address, secret or enabled state differ. Every step is safe to repeat.
 - **Strict about who sent a webhook, lenient about what it says.** Wrong secret → `401`; an unparseable or unknown delivery is stored as `IGNORED` / `ERROR` and answered `200`.
@@ -76,9 +77,11 @@ The Casdoor tests create organisations, applications, users and webhooks with ti
 |---|---|---|
 | Cache the result of `ResolveClaims`, or fall back to the last known claims when authz is down | Nothing fails; after a role change the refreshed token still carries the old roles, the component answers `401 token_stale`, the frontend refreshes again, forever | The claims must be the current ones; an outage is answered with `503`, not with stale roles |
 | Rotate the refresh token before the claims are fetched | One authz hiccup: the refresh answers `503`, the client retries with the same token, hits reuse detection, and every session of that user is revoked | `RefreshToken` verifies, fetches claims and signs first, rotates last; `TestREST_authz不可达时刷新回503且不消耗refreshToken` |
-| Dedup webhook deliveries with a unique constraint, or drop the advisory lock in `RecordDeliveryAndPublish` | Duplicates pass silently; the same user event reaches downstream twice | `webhook_deliveries` is partitioned, so its unique index must include `received_at`, which differs on every redelivery |
+| Dedup webhook deliveries with a unique constraint, or drop the advisory lock in `RecordDelivery` | Duplicates pass silently; the same user event reaches downstream twice | `webhook_deliveries` is partitioned, so its unique index must include `received_at`, which differs on every redelivery |
 | Make `webhook_deliveries.payload` JSONB, or reject deliveries that don't parse | A malformed delivery makes the insert fail; the event is lost and Casdoor retries forever | Only some actions have been seen on a real Casdoor (see `docs/design.md`); the payload is stored as `TEXT` and marked `IGNORED` / `ERROR` |
-| Decode the delivery's `object` only as a JSON object | Every real delivery is stored as `IGNORED` ("no user identifier"); no `infra.iam.user.*.v1` event is ever published, and every gate is green | Casdoor sends `object` as a JSON-encoded string; `decodeUser` accepts both forms, `TestWebhookUserPayload_object是JSON字符串时也能取出用户字段` |
+| Decode the delivery's `object` only as a JSON object | Every real delivery is stored as `IGNORED` ("no user identifier"); no `infra.iam.user.*.v1` event is ever published, and every gate is green | Casdoor sends `object` as a JSON-encoded string; `decodeUserRef` accepts both forms, `TestWebhookUserPayload_object是JSON字符串时也能认出是谁` |
+| Publish a user event from the delivery body, or read Casdoor before `NextUserEventVersionTx` | Casdoor delivers two changes of one second newest first; downstream keeps the older one. Single-delivery tests stay green | Each event is read back after the version row is locked; `TestWebhook_两次修改倒序到达_下游留下的是最新状态`, `TestWebhook_同一用户两次投递并发_后回读的拿到更大的版本号` |
+| Record a delivery whose read-back failed | Casdoor does not retry; a recorded failure would also make any redelivery a duplicate | The transaction rolls back and the webhook answers `503`; `TestWebhook_Casdoor会话未就绪_回Unavailable且不登记` |
 | Hard-code Casdoor's JWKS address, or use the `jwks_uri` from discovery as it is | Token exchange answers `503` forever; keyfunc reports `404` or connects to itself | Casdoor serves `/.well-known/jwks` (no `.json`), and the discovery host is Casdoor's `origin`, which this container may not reach; `rebaseHost` keeps the path and uses `CASDOOR_BASE_URL`'s host |
 | Add the `password` grant to the application `bootstrap` creates | Works, and turns the login application into one that accepts passwords sent by anyone | Browsers use the authorization code flow; only the test application in `casdoor_integration_test.go` and `scripts/seed.sh` has the password grant |
 | Give refresh tokens and application tokens the same claims without the `typ` check | An application token is accepted as a refresh token, or the other way round | Both are signed with the same key; `TestVerifyRefreshToken_不接受应用token冒充` |
