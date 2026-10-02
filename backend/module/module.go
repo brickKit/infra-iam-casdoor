@@ -6,8 +6,6 @@ package module
 
 import (
 	"context"
-	"crypto/rsa"
-	"fmt"
 	"log/slog"
 	"net/url"
 	"sync/atomic"
@@ -20,10 +18,8 @@ import (
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/bootstrap"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/consumer"
-	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/features"
 	grpcapi "github.com/brickKit/infra-iam-casdoor/v2/backend/internal/grpc"
 	httpapi "github.com/brickKit/infra-iam-casdoor/v2/backend/internal/http"
-	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/keys"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/repo"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/service"
 )
@@ -32,44 +28,16 @@ const webhookSharedSecretHeader = "X-Shared-Secret"
 
 // New 构造 infra-iam-casdoor 模块。签名一个字都不许改（§12.5.1）。
 func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
-	// ⚠️ 配置只从 rt.Config 来，模块里零 os.Getenv（§12.5.3、决策 110）。
-	schema := rt.Config.StringOr("PG_SCHEMA", "infra_iam_casdoor")
-	role := schema + "_rw"
-
-	casdoorBaseURL := rt.Config.MustString("CASDOOR_BASE_URL")
-	casdoorAdminUsername := rt.Config.StringOr("CASDOOR_ADMIN_USERNAME", "admin")
-	casdoorAdminPassword := rt.Config.MustString("CASDOOR_ADMIN_PASSWORD")
-	casdoorOrgName := rt.Config.StringOr("CASDOOR_ORG_NAME", "brickkit")
-	casdoorAppName := rt.Config.StringOr("CASDOOR_APP_NAME", "brickkit-app")
-	webhookSharedSecret := rt.Config.MustString("WEBHOOK_SHARED_SECRET")
-	webhookCallbackURL := rt.Config.StringOr("WEBHOOK_CALLBACK_URL", "")
-	appTokenSigningKeyPem := rt.Config.MustString("APP_TOKEN_SIGNING_KEY_PEM")
-	appTokenPreviousPublicKeyPem := rt.Config.StringOr("APP_TOKEN_PREVIOUS_PUBLIC_KEY_PEM", "")
-	appTokenTTL := time.Duration(rt.Config.IntOr("APP_TOKEN_TTL_SECONDS", 600)) * time.Second
-	refreshTokenTTL := time.Duration(rt.Config.IntOr("REFRESH_TOKEN_TTL_SECONDS", 604800)) * time.Second
-	enabledComponents, err := features.FromLockfile(rt.Config.StringOr("ENABLED_COMPONENTS", ""))
+	// ⚠️ 配置只从 rt.Config 来，模块里零 os.Getenv（进外壳后成员共用一个进程环境）。
+	cfg, err := loadSettings(rt.Config)
 	if err != nil {
 		return nil, err
 	}
 
-	signingKey, currentKid, err := loadSigningKey(appTokenSigningKeyPem)
-	if err != nil {
-		return nil, fmt.Errorf("解析 appTokenSigningKeyPem 失败: %w", err)
-	}
-	var previousPub *rsa.PublicKey
-	var previousKid string
-	if appTokenPreviousPublicKeyPem != "" {
-		previousPub, err = keys.ParsePublicKeyPEM(appTokenPreviousPublicKeyPem)
-		if err != nil {
-			return nil, fmt.Errorf("解析 appTokenPreviousPublicKeyPem 失败: %w", err)
-		}
-		previousKid = keys.Thumbprint(previousPub)
-	}
-
-	// ⚠️ 池从 rt.DB 来，不许自己 sql.Open（§13.3 铁律二）。
-	r := repo.New(rt.DB, role, schema)
-	svc := service.New(r, rt.Config, schema, signingKey, currentKid, previousPub, previousKid,
-		appTokenTTL, refreshTokenTTL, enabledComponents, webhookSharedSecret, webhookSharedSecretHeader)
+	// ⚠️ 池从 rt.DB 来，不许自己 sql.Open。
+	r := repo.New(rt.DB, cfg.role, cfg.schema)
+	svc := service.New(r, rt.Config, cfg.schema, cfg.signingKey, cfg.currentKid, cfg.previousPub, cfg.previousKid,
+		cfg.accessTTL, cfg.refreshTTL, cfg.enabledComponents, cfg.webhookSharedSecret, webhookSharedSecretHeader)
 
 	// HTTP：engine 必须用 besdk.NewGinEngine，它已挂好 OTel / request-id /
 	// error→status / PII 脱敏日志 / RED 指标 / /healthz / /metrics。
@@ -87,7 +55,7 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 		// ⚠️ gRPC 一个不省，而且由调用方在 extraPorts["grpc"] 上 Listen
 		// （§1.5 原则一）。
 		RegisterGRPC: func(gs *grpc.Server) {
-			iamv1.RegisterIamServiceServer(gs, grpcapi.New(&adminClientHolder, enabledComponents))
+			iamv1.RegisterIamServiceServer(gs, grpcapi.New(&adminClientHolder, cfg.enabledComponents))
 		},
 
 		// Start 做三件事：① 登记签名密钥元数据 + 登录 Casdoor 管理 API +
@@ -98,36 +66,36 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 		// 放弃"的部分，因为它直接决定 POST /api/iam/token 这个最核心
 		// 接口能不能用）；③ 起 Outbox 推送 + 事件消费两个常驻循环。
 		Start: func(ctx context.Context) error {
-			if err := svc.RegisterSigningKey(ctx, currentKid, "RS256"); err != nil {
+			if err := svc.RegisterSigningKey(ctx, cfg.currentKid, "RS256"); err != nil {
 				rt.Logger.Error("登记当前签名密钥元数据失败", "error", err)
 			}
-			if previousPub != nil {
-				if err := svc.RegisterSigningKey(ctx, previousKid, "RS256"); err != nil {
+			if cfg.previousPub != nil {
+				if err := svc.RegisterSigningKey(ctx, cfg.previousKid, "RS256"); err != nil {
 					rt.Logger.Error("登记上一把签名密钥元数据失败", "error", err)
 				}
 			}
 
-			adminClient, err := casdoor.NewAdminClient(ctx, casdoorBaseURL, casdoorAdminUsername, casdoorAdminPassword)
+			adminClient, err := casdoor.NewAdminClient(ctx, cfg.casdoorBaseURL, cfg.casdoorAdminUsername, cfg.casdoorAdminPassword)
 			if err != nil {
 				rt.Logger.Error("登录 Casdoor 管理 API 失败，本轮跳过自举，gRPC BatchGetUsers 暂不可用", "error", err)
 			} else {
 				adminClientHolder.Store(adminClient)
 				bootstrap.Run(ctx, adminClient, r, bootstrap.Config{
-					OrgName:                casdoorOrgName,
-					AppName:                casdoorAppName,
+					OrgName:                cfg.casdoorOrgName,
+					AppName:                cfg.casdoorAppName,
 					AppRedirectURIs:        []string{}, // 阶段三没有前端，先不写死回调地址（阶段四补）
 					WebhookName:            "brickkit-user-events",
-					WebhookCallbackURL:     webhookCallbackURL,
+					WebhookCallbackURL:     cfg.webhookCallbackURL,
 					WebhookSharedHeader:    webhookSharedSecretHeader,
-					WebhookSharedSecretVal: webhookSharedSecret,
+					WebhookSharedSecretVal: cfg.webhookSharedSecret,
 				}, rt.Logger)
 			}
 
-			go discoverIDTokenVerifier(ctx, casdoorBaseURL, svc, rt.Logger)
+			go discoverIDTokenVerifier(ctx, cfg.casdoorBaseURL, svc, rt.Logger)
 
 			errCh := make(chan error, 2)
-			go func() { errCh <- besdk.StartOutboxPump(ctx, rt.DB, schema, rt.NATS, rt.Logger) }()
-			go func() { errCh <- consumer.Start(ctx, rt.DB, role, schema, rt.NATS, rt.Logger) }()
+			go func() { errCh <- besdk.StartOutboxPump(ctx, rt.DB, cfg.schema, rt.NATS, rt.Logger) }()
+			go func() { errCh <- consumer.Start(ctx, rt.DB, cfg.role, cfg.schema, rt.NATS, rt.Logger) }()
 
 			select {
 			case <-ctx.Done():
@@ -138,14 +106,6 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 		},
 		Stop: func(ctx context.Context) error { return nil }, // 后台循环靠 ctx 退出
 	}, nil
-}
-
-func loadSigningKey(pem string) (*rsa.PrivateKey, string, error) {
-	key, err := keys.ParsePrivateKeyPEM(pem)
-	if err != nil {
-		return nil, "", err
-	}
-	return key, keys.Thumbprint(&key.PublicKey), nil
 }
 
 // discoverIDTokenVerifier 重试直到 OIDC 发现成功——成功一次之后
