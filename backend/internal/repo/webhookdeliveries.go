@@ -18,7 +18,7 @@ import (
 // dedup_key 取一把事务级 advisory 锁，再查"有没有登记过"、没有才插：同一条投递
 // 并发到达时，后到的事务等前一个提交，再查就看得到那一行，判为重投、不再登记。
 // 只查不锁的话，两个事务都会在对方提交前查到"不存在"，于是都插、都发。锁随事务
-// 结束释放，不需要解锁。
+// 结束释放，不需要解锁。锁的第一个键同 lockSubTokensTx：现读 current_schema()，不写死 schema 名。
 //
 // dedupKey 已存在时 isNew=false，什么都不写（重投沿用第一次的处理结果）。
 func (r *Repo) RecordDelivery(ctx context.Context, dedupKey, eventAction string, payload []byte,
@@ -26,7 +26,7 @@ func (r *Repo) RecordDelivery(ctx context.Context, dedupKey, eventAction string,
 	isNew = true
 	txErr := besdk.WithTx(ctx, r.db, r.role, r.schema, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx,
-			`SELECT pg_advisory_xact_lock(hashtext('infra_iam_casdoor.webhook_deliveries'), hashtext($1))`,
+			`SELECT pg_advisory_xact_lock(hashtext(current_schema() || '.webhook_deliveries'), hashtext($1))`,
 			dedupKey); err != nil {
 			return err
 		}

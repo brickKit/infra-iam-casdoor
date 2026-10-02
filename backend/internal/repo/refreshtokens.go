@@ -184,8 +184,11 @@ func RevokeAllRefreshTokensForSubTx(ctx context.Context, tx *sql.Tx, sub string)
 // 新 token 就漏网了——在 Casdoor 里停用的人恰好在那一刻刷新，就还能一直刷下去。拿了这把锁，
 // 撤销要么在轮换之前（轮换看到旧行已撤销，按重放处理、401），要么在轮换提交之后开始
 // （看得到新行）。TestRevokeAll_与轮换并发_轮换出的新token也被撤销。
+//
+// 锁的第一个键是"schema 名 + 表名"，schema 现读 current_schema()（事务的 search_path 第一项，
+// 即 PG_SCHEMA），不写死：同一个库里另一个 schema 的实例不和它抢锁；默认 schema 下与写死时是同一个键。
 func lockSubTokensTx(ctx context.Context, tx *sql.Tx, sub string) error {
 	_, err := tx.ExecContext(ctx,
-		`SELECT pg_advisory_xact_lock(hashtext('infra_iam_casdoor.refresh_tokens'), hashtext($1))`, sub)
+		`SELECT pg_advisory_xact_lock(hashtext(current_schema() || '.refresh_tokens'), hashtext($1))`, sub)
 	return err
 }
