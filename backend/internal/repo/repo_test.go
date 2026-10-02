@@ -313,3 +313,44 @@ func TestRecordDeliveryAndPublish_publish失败整体回滚(t *testing.T) {
 		t.Fatal("回滚后重新登记应该被判定为新投递（证明第一次真的整体回滚了）")
 	}
 }
+
+// Casdoor 超时重投时，前一次投递可能还没处理完：同一条投递并发到达多次，事件
+// 只能发一次。先查再插的两个事务都会在对方提交之前查到"不存在"，于是都插、都
+// 发——下游（infra-notification 等）收到两条同样的用户事件。
+func TestRecordDeliveryAndPublish_同一投递并发到达只发布一次(t *testing.T) {
+	r := testRepo(t)
+	ctx := context.Background()
+	dedupKey := uniqueID("dedup-concurrent")
+
+	const n = 8
+	var published, fresh atomic.Int32
+	errs := make(chan error, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func() {
+			<-start
+			isNew, err := r.RecordDeliveryAndPublish(ctx, dedupKey, "add-user", []byte(`{"a":1}`),
+				"PROCESSED", "", func(tx *sql.Tx) error {
+					published.Add(1)
+					time.Sleep(100 * time.Millisecond) // 让别的投递在本事务提交前查一次
+					return nil
+				})
+			if isNew {
+				fresh.Add(1)
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("并发投递不该报错：%v", err)
+		}
+	}
+	if got := published.Load(); got != 1 {
+		t.Fatalf("同一投递并发到达 %d 次，事件应只发布 1 次，实际 %d 次", n, got)
+	}
+	if got := fresh.Load(); got != 1 {
+		t.Fatalf("应恰好 1 次判为新投递，实际 %d 次", got)
+	}
+}

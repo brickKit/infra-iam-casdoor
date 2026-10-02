@@ -9,23 +9,16 @@ import (
 
 // RecordDeliveryAndPublish 是 webhook 投递的唯一写入口：去重登记 + （新
 // 投递时）执行 publish 回调 + 落地最终状态，三步在同一个事务里完成
-// （Outbox Pattern：写业务效果与写事件必须同一事务，否则进程崩在中间就是"记录了投递但事件没发出去"或反过来）。
+// （Outbox Pattern：写业务效果与写事件必须同一事务，否则进程崩在中间就是
+// "记录了投递但事件没发出去"或反过来）。
 //
-// ⚠️ 去重判据是显式的"先查再插"（SELECT EXISTS ... 再 INSERT），不是
-// 单靠 INSERT 撞唯一约束——这是写这份代码时真的踩出来的一个坑：
-// `webhook_deliveries` 是按 received_at 分区的表，PostgreSQL 要求分区表
-// 的唯一索引必须包含分区键，所以唯一索引只能是
-// (dedup_key, received_at) 这一对组合，而不是 dedup_key 单独一列。两次
-// 重投的 received_at 几乎必然不同（哪怕只差几微秒），composite 唯一
-// 约束根本拦不住——第一版实现只依赖这条唯一约束，写测试时
-// "同一个 dedup_key 插两次，第二次应该判定为重投" 直接断言失败，
-// 才发现这个组合键约束在这里形同虚设。改成显式 SELECT EXISTS 之后
-// 拦住了（`webhook_deliveries_dedup_idx` 支持只用 dedup_key 作为
-// leading column 高效查询，不需要额外建索引）。⚠️ 代价：两次真正
-// **同时**（同一事务隔离级别下）到达的重投仍可能都通过 EXISTS 检查
-// 各自插入成功——这是可接受的残余风险（webhook 重投是串行重试，不是
-// 并发请求；真撞上的话唯一约束仍会在极小概率下拦下完全同 received_at
-// 的那一种）。
+// ⚠️ 去重不能靠唯一约束：webhook_deliveries 按 received_at 分区，PostgreSQL
+// 要求分区表的唯一索引包含分区键，唯一索引只能是 (dedup_key, received_at)，
+// 两次重投的 received_at 几乎必然不同，约束拦不住。所以在同一个事务里先按
+// dedup_key 取一把事务级 advisory 锁，再查"有没有登记过"、没有才插：同一条投递
+// 并发到达时（Casdoor 超时重投而前一次还没处理完），后到的事务等前一个提交，
+// 再查就看得到那一行，判为重投、不再发布。只查不锁的话，两个事务都会在对方
+// 提交前查到"不存在"，于是都插、都发。锁随事务结束释放，不需要解锁。
 //
 // dedupKey 已存在时 isNew=false，publish 不会被调用，status/errMsg 也
 // 不会被使用（重投沿用第一次的处理结果，不重复记录）。publish 为 nil
@@ -35,6 +28,11 @@ func (r *Repo) RecordDeliveryAndPublish(ctx context.Context, dedupKey, eventActi
 	status, errMsg string, publish func(tx *sql.Tx) error) (isNew bool, err error) {
 	isNew = true
 	txErr := besdk.WithTx(ctx, r.db, r.role, r.schema, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext('infra_iam_casdoor.webhook_deliveries'), hashtext($1))`,
+			dedupKey); err != nil {
+			return err
+		}
 		var exists bool
 		if err := tx.QueryRowContext(ctx,
 			`SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE dedup_key = $1)`, dedupKey,
@@ -49,9 +47,6 @@ func (r *Repo) RecordDeliveryAndPublish(ctx context.Context, dedupKey, eventActi
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO webhook_deliveries (dedup_key, event_action, payload) VALUES ($1, $2, $3)`,
 			dedupKey, eventAction, payload); err != nil {
-			// 走到这里说明极小概率的并发双插撞上了唯一约束——当成
-			// 真正的错误抛出，不静默改判成"重投"（那会让一条真实的
-			// 新投递被错误地跳过处理）。
 			return err
 		}
 		if publish != nil {
