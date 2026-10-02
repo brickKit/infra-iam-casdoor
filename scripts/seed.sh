@@ -40,6 +40,11 @@ need curl; need python3
 CASDOOR_URL="${CASDOOR_URL:-http://localhost:8000}"
 SEED_PASSWORD="DevSeed123!"
 SEED_APP="local-dev-seed-app"
+# 测试应用的 client ID 固定成它的名字：本组件换 token 时校验 Casdoor id_token 的 aud，
+# 本地环境的 config/infra-iam-casdoor.yaml 把它列进 CASDOOR_EXTRA_CLIENT_IDS 才认这个
+# 应用签的 id_token。随机生成的话每次重建应用都要改配置。⚠️ 生产环境不建这个应用，
+# 也不列它：它开着密码授权。
+SEED_CLIENT_ID="$SEED_APP"
 COOKIE_JAR="$(mktemp)"
 trap 'rm -f "$COOKIE_JAR"' EXIT
 
@@ -84,12 +89,33 @@ EXISTING_APP="$(curl -b "$COOKIE_JAR" -s "$CASDOOR_URL/api/get-application?id=ad
 if [ "$EXISTING_APP" = "no" ]; then
   curl -b "$COOKIE_JAR" -s -X POST "$CASDOOR_URL/api/add-application" \
     -H "Content-Type: application/json" \
-    -d "{\"owner\":\"admin\",\"name\":\"$SEED_APP\",\"displayName\":\"$SEED_APP\",\"organization\":\"brickkit\",\"cert\":\"cert-built-in\",\"enablePassword\":true,\"enableSignUp\":false,\"redirectUris\":[\"http://localhost:3000/callback\"],\"grantTypes\":[\"authorization_code\",\"password\",\"refresh_token\"],\"tokenFormat\":\"JWT\",\"expireInHours\":24,\"refreshExpireInHours\":168}" \
+    -d "{\"owner\":\"admin\",\"name\":\"$SEED_APP\",\"displayName\":\"$SEED_APP\",\"clientId\":\"$SEED_CLIENT_ID\",\"organization\":\"brickkit\",\"cert\":\"cert-built-in\",\"enablePassword\":true,\"enableSignUp\":false,\"redirectUris\":[\"http://localhost:3000/callback\"],\"grantTypes\":[\"authorization_code\",\"password\",\"refresh_token\"],\"tokenFormat\":\"JWT\",\"expireInHours\":24,\"refreshExpireInHours\":168}" \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("status")=="ok", d' \
     || die "创建 Casdoor ROPC 测试应用失败"
   ok "已创建 Casdoor ROPC 测试应用 $SEED_APP（⚠️ 开着密码授权，只应该存在于本地环境）"
 else
-  ok "Casdoor ROPC 测试应用 $SEED_APP 已存在，跳过创建"
+  # 早先建的应用 client ID 是 Casdoor 随机生成的：改成固定值（整个应用对象读出来只改这一个
+  # 字段再写回；对象里有 clientSecret，只经 0600 的临时文件，不打印）。
+  APP_FILE="$(mktemp)"; chmod 600 "$APP_FILE"
+  curl -b "$COOKIE_JAR" -s "$CASDOOR_URL/api/get-application?id=admin/$SEED_APP" > "$APP_FILE"
+  if python3 - "$APP_FILE" "$SEED_CLIENT_ID" <<'PYFIX'
+import json, sys
+d = json.load(open(sys.argv[1]), strict=False)["data"]
+if d["clientId"] == sys.argv[2]:
+    sys.exit(1)
+d["clientId"] = sys.argv[2]
+json.dump(d, open(sys.argv[1], "w"))
+PYFIX
+  then
+    curl -b "$COOKIE_JAR" -s -X POST "$CASDOOR_URL/api/update-application?id=admin/$SEED_APP" \
+      -H "Content-Type: application/json" --data-binary @"$APP_FILE" \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("status")=="ok", d.get("msg")' \
+      || { rm -f "$APP_FILE"; die "把 $SEED_APP 的 client ID 改成 $SEED_CLIENT_ID 失败"; }
+    ok "Casdoor ROPC 测试应用 $SEED_APP 已存在，client ID 改成固定的 $SEED_CLIENT_ID"
+  else
+    ok "Casdoor ROPC 测试应用 $SEED_APP 已存在（client ID $SEED_CLIENT_ID），跳过创建"
+  fi
+  rm -f "$APP_FILE"
 fi
 
 sub_of() {
