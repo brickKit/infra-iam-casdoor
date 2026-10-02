@@ -32,9 +32,8 @@ func RegisterRoutes(eng *gin.Engine, svc *service.Service) {
 	// webhook 路由的"校验"不是权限键——besdk.Public 只是"不走进程内
 	// bundle map 查找"，真正的校验（比对共享密钥 header）在
 	// casdoorWebhookHandler 内部做。⚠️ 必须仍然经 besdk.POST 注册
-	// （不许裸用 eng.POST：make gates 的 bare-route-scan 查它）——这里不是"权限键场景不适用
-	// 就绕过 SDK 封装"，而是"这条路由的校验方式不是权限键，但依然要
-	// 走统一注册入口"。
+	// （不许裸用 eng.POST：make gates 的 bare-route-scan 查它）——这条路由的
+	// 校验方式不是权限键，但依然要走统一注册入口。
 	besdk.POST(eng, "/api/iam/webhooks/casdoor", besdk.Public, casdoorWebhookHandler(svc))
 }
 
@@ -131,11 +130,10 @@ func tenantFeaturesHandler(svc *service.Service) gin.HandlerFunc {
 	}
 }
 
-// casdoorWebhookHandler 先校验共享密钥 header（openapi 契约、AGENTS.md
-// 明确禁令：漏了这条校验等于开了一个任何人都能伪造用户事件的口子），
-// 再登记+宽容解析投递。header 名是配置项（固定叫 X-Shared-Secret——见
-// openapi 契约的 securitySchemes，CreateWebhook 建 webhook 时配的是
-// 同一个名字，两边必须一致）。
+// casdoorWebhookHandler 先校验共享密钥 header（漏了这条校验等于开了一个任何人
+// 都能伪造用户事件的口子），再登记 + 宽容解析投递。header 名固定叫
+// X-Shared-Secret（module.go 的常量，openapi 契约的 securitySchemes 写的也是它；
+// 启动对账建 webhook 时配的是同一个名字，两边必须一致）。
 func casdoorWebhookHandler(svc *service.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := svc.WebhookSharedSecretHeader()

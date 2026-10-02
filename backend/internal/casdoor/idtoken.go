@@ -19,8 +19,7 @@ type IDTokenVerifier struct {
 
 // idTokenClaims 只取本组件真正要用的字段：sub 是全系统身份的最终来源
 // （真机核对过——Casdoor 的 id_token/access_token 的 sub 是它内部的
-// 用户 UUID，不是用户名，见 docs/dev/实测踩坑记录.md 或 AGENTS.md 的
-// 记录）。email/displayName/phone 都用不上：token 交换这一步只需要
+// 用户 UUID，不是用户名）。email/displayName/phone 都用不上：token 交换这一步只需要
 // sub 去调 ResolveClaims，用户资料由 webhook 事件（infra.iam.user.
 // created/updated.v1）携带给真正关心它们的下游。
 type idTokenClaims struct {

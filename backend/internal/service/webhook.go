@@ -9,8 +9,8 @@ import (
 
 // webhookUserPayload 宽容解析 Casdoor 的 webhook 投递体。
 //
-// ⚠️ 诚实的现状（docs/design.md 的未决问题）：已经确认了 Casdoor 的 webhook **支持自定义 header**（共享密钥校验的
-// 前提），但**没能在真机上实际触发并抓到一条用户增删改事件的真实
+// ⚠️ 诚实的现状（docs/design.md 的未决问题）：已经确认了 Casdoor 的 webhook
+// **支持自定义 header**（共享密钥校验的前提），但**没能在真机上实际触发并抓到一条用户增删改事件的真实
 // payload**——自助注册需要短信/邮箱验证码，受限环境走不通；管理 API
 // 建用户在真机测试里没有观察到 webhook 被调用。所以这里的字段候选是
 // 按 Casdoor 开源代码里 `object.Record`/`object.Webhook` 的公开字段名
@@ -28,8 +28,7 @@ type webhookUserPayload struct {
 }
 
 // casdoorUserFields 是 Casdoor User 对象里本组件关心的字段——字段名
-// 已经通过真实签发的 token payload 核对过（sub 对应 "id"，见
-// docs/dev/实测踩坑记录.md 或 AGENTS.md 的真机核对记录），比 action/
+// 已经通过真实签发的 token payload 核对过（sub 对应 "id"），比 action/
 // object 那层包装可信得多。
 type casdoorUserFields struct {
 	ID          string `json:"id"`

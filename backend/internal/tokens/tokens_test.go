@@ -115,8 +115,7 @@ func TestVerifyRefreshToken_过期拒绝(t *testing.T) {
 	}
 }
 
-// TestVerifyRefreshToken_签名篡改拒绝 复用 be-sdk-ts 那次踩坑的教训
-// （实测踩坑记录 A8）：翻转最后一个字符可能因为 RS256 签名字节长度对
+// TestVerifyRefreshToken_签名篡改拒绝：翻转最后一个字符可能因为 RS256 签名字节长度对
 // base64url 编码分组的巧合而解码不出差异，这里翻转中间字符，确定性地
 // 破坏签名。
 func TestVerifyRefreshToken_签名篡改拒绝(t *testing.T) {

@@ -182,8 +182,8 @@ func (c *AdminClient) OrganizationExists(ctx context.Context, name string) (bool
 }
 
 // CreateOrganization 建一个新组织——本组件用它承载真实用户（不用
-// built-in，那是 Casdoor 自己的内置管理组织，见 AGENTS.md 的真机核对
-// 记录："往 built-in 建普通用户默认被拒"）。
+// built-in，那是 Casdoor 自己的内置管理组织：真机核对过，往 built-in 建普通
+// 用户默认被拒）。
 func (c *AdminClient) CreateOrganization(ctx context.Context, name, displayName string) error {
 	_, err := c.post(ctx, "/api/add-organization", map[string]any{
 		"owner":              c.username,

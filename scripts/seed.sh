@@ -83,7 +83,7 @@ if [ "$EXISTING_APP" = "no" ]; then
     -d "{\"owner\":\"admin\",\"name\":\"$SEED_APP\",\"displayName\":\"$SEED_APP\",\"organization\":\"brickkit\",\"cert\":\"cert-built-in\",\"enablePassword\":true,\"enableSignUp\":false,\"redirectUris\":[\"http://localhost:3000/callback\"],\"grantTypes\":[\"authorization_code\",\"password\",\"refresh_token\"],\"tokenFormat\":\"JWT\",\"expireInHours\":24,\"refreshExpireInHours\":168}" \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("status")=="ok", d' \
     || die "创建 Casdoor ROPC 测试应用失败"
-  ok "已创建 Casdoor ROPC 测试应用 $SEED_APP（⚠️ 只应该存在于本地环境，见 infra/seed-data/README.md）"
+  ok "已创建 Casdoor ROPC 测试应用 $SEED_APP（⚠️ 开着密码授权，只应该存在于本地环境）"
 else
   ok "Casdoor ROPC 测试应用 $SEED_APP 已存在，跳过创建"
 fi

@@ -21,8 +21,7 @@ import (
 // 就 SKIP）。
 //
 // 建的全部对象都用带时间戳的名字，并在 t.Cleanup 里删除，避免污染
-// 共享的开发环境 Casdoor 实例——这是本组件设计阶段调研时定下的纪律
-// （AGENTS.md：真机核对完必须清理测试产物）。
+// 共享的开发环境 Casdoor 实例（真机测试建的东西必须自己清理）。
 func testCasdoorBaseURL(t *testing.T) string {
 	t.Helper()
 	base := os.Getenv("TEST_CASDOOR_BASE_URL")
