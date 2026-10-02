@@ -135,11 +135,15 @@ func (s *Service) RefreshToken(ctx context.Context, oldRefreshToken string) (*To
 		return nil, err
 	}
 
-	newRefreshToken, newJTI, newExpiresAt, err := s.issuer.SignRefreshToken(sub)
-	if err != nil {
-		return nil, err
+	// 新 refresh token 在轮换的事务里签：它的过期时间不能晚于这个会话登录时定下的期限
+	// （repo 从旧行读出来传给 mint），轮换不续期。
+	var newRefreshToken string
+	mint := func(notAfter time.Time) (string, time.Time, error) {
+		tok, jti, expiresAt, err := s.issuer.SignRefreshTokenUntil(sub, notAfter)
+		newRefreshToken = tok
+		return jti, expiresAt, err
 	}
-	if err := s.repo.RotateRefreshToken(ctx, oldJTI, newJTI, sub, newExpiresAt); err != nil {
+	if err := s.repo.RotateRefreshToken(ctx, oldJTI, sub, mint); err != nil {
 		if errors.Is(err, repo.ErrRefreshTokenInvalid) {
 			return nil, fmt.Errorf("%w: refresh token 已失效", ErrUnauthenticated)
 		}

@@ -51,13 +51,13 @@ func TestIssueAndRotateRefreshToken(t *testing.T) {
 	}
 
 	jti2 := uniqueID("jti")
-	if err := r.RotateRefreshToken(ctx, jti1, jti2, sub, time.Now().Add(time.Hour)); err != nil {
+	if err := r.RotateRefreshToken(ctx, jti1, sub, mintAs(jti2, time.Now().Add(time.Hour))); err != nil {
 		t.Fatalf("轮换失败：%v", err)
 	}
 
 	// 旧 jti 已经被撤销、不能再轮换第二次——用它重放应该报 ErrRefreshTokenInvalid。
 	jti3 := uniqueID("jti")
-	err := r.RotateRefreshToken(ctx, jti1, jti3, sub, time.Now().Add(time.Hour))
+	err := r.RotateRefreshToken(ctx, jti1, sub, mintAs(jti3, time.Now().Add(time.Hour)))
 	if err != ErrRefreshTokenInvalid {
 		t.Fatalf("重放已轮换的旧 jti 应该报 ErrRefreshTokenInvalid，实际 %v", err)
 	}
@@ -77,20 +77,20 @@ func TestRotateRefreshToken_重放会撤销该sub全部有效token(t *testing.T)
 		t.Fatalf("登记失败：%v", err)
 	}
 	jtiB := uniqueID("jti")
-	if err := r.RotateRefreshToken(ctx, jtiA, jtiB, sub, time.Now().Add(time.Hour)); err != nil {
+	if err := r.RotateRefreshToken(ctx, jtiA, sub, mintAs(jtiB, time.Now().Add(time.Hour))); err != nil {
 		t.Fatalf("第一次轮换失败：%v", err)
 	}
 
 	// 攻击者拿着已经用过的 jtiA 重放。
 	jtiC := uniqueID("jti")
-	if err := r.RotateRefreshToken(ctx, jtiA, jtiC, sub, time.Now().Add(time.Hour)); err != ErrRefreshTokenInvalid {
+	if err := r.RotateRefreshToken(ctx, jtiA, sub, mintAs(jtiC, time.Now().Add(time.Hour))); err != ErrRefreshTokenInvalid {
 		t.Fatalf("重放旧 jti 应该报 ErrRefreshTokenInvalid，实际 %v", err)
 	}
 
 	// 断言：这个 sub 名下**所有**曾经有效的 refresh token（包括合法轮换
 	// 出来的 jtiB）现在都应该已经被撤销——用它再刷新必须失败。
 	jtiD := uniqueID("jti")
-	if err := r.RotateRefreshToken(ctx, jtiB, jtiD, sub, time.Now().Add(time.Hour)); err != ErrRefreshTokenInvalid {
+	if err := r.RotateRefreshToken(ctx, jtiB, sub, mintAs(jtiD, time.Now().Add(time.Hour))); err != ErrRefreshTokenInvalid {
 		t.Fatalf("重放检测应该连坐撤销 jtiB，用它刷新应该失败，实际 %v", err)
 	}
 }
@@ -112,7 +112,7 @@ func TestRevokeRefreshToken_幂等(t *testing.T) {
 	}
 	// 撤销后不能再刷新。
 	jti2 := uniqueID("jti")
-	if err := r.RotateRefreshToken(ctx, jti, jti2, sub, time.Now().Add(time.Hour)); err != ErrRefreshTokenInvalid {
+	if err := r.RotateRefreshToken(ctx, jti, sub, mintAs(jti2, time.Now().Add(time.Hour))); err != ErrRefreshTokenInvalid {
 		t.Fatalf("撤销后用它刷新应该失败，实际 %v", err)
 	}
 }
@@ -135,7 +135,7 @@ func TestRevokeRefreshToken_sub不匹配不生效(t *testing.T) {
 	}
 	// 真正的 owner 应该仍然能正常刷新——说明攻击者的调用确实是空操作。
 	jti2 := uniqueID("jti")
-	if err := r.RotateRefreshToken(ctx, jti, jti2, realOwner, time.Now().Add(time.Hour)); err != nil {
+	if err := r.RotateRefreshToken(ctx, jti, realOwner, mintAs(jti2, time.Now().Add(time.Hour))); err != nil {
 		t.Fatalf("真正的 owner 应该仍能刷新：%v", err)
 	}
 }
@@ -157,11 +157,11 @@ func TestRevokeAllRefreshTokensForSub(t *testing.T) {
 		t.Fatalf("批量撤销失败：%v", err)
 	}
 	jti3 := uniqueID("jti")
-	if err := r.RotateRefreshToken(ctx, jti1, jti3, sub, time.Now().Add(time.Hour)); err != ErrRefreshTokenInvalid {
+	if err := r.RotateRefreshToken(ctx, jti1, sub, mintAs(jti3, time.Now().Add(time.Hour))); err != ErrRefreshTokenInvalid {
 		t.Fatalf("被踢之后 jti1 应该失效，实际 %v", err)
 	}
 	jti4 := uniqueID("jti")
-	if err := r.RotateRefreshToken(ctx, jti2, jti4, sub, time.Now().Add(time.Hour)); err != ErrRefreshTokenInvalid {
+	if err := r.RotateRefreshToken(ctx, jti2, sub, mintAs(jti4, time.Now().Add(time.Hour))); err != ErrRefreshTokenInvalid {
 		t.Fatalf("被踢之后 jti2 应该失效，实际 %v", err)
 	}
 	// 幂等：这个 sub 已经没有任何有效 token，再调一次不该报错。
@@ -352,5 +352,15 @@ func TestRecordDelivery_同一投递并发到达只发布一次(t *testing.T) {
 	}
 	if got := fresh.Load(); got != 1 {
 		t.Fatalf("应恰好 1 次判为新投递，实际 %d 次", got)
+	}
+}
+
+// mintAs 是 RotateRefreshToken 的签发回调替身：给出固定的新 jti 与过期时间（不超过会话期限）。
+func mintAs(jti string, expiresAt time.Time) MintRefreshToken {
+	return func(notAfter time.Time) (string, time.Time, error) {
+		if notAfter.Before(expiresAt) {
+			expiresAt = notAfter
+		}
+		return jti, expiresAt, nil
 	}
 }

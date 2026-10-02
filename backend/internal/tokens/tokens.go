@@ -78,14 +78,24 @@ func (iss *Issuer) SignAccessToken(c Claims) (string, int, error) {
 	return token, int(iss.accessTTL.Seconds()), nil
 }
 
-// SignRefreshToken 签一个新的 refresh token，jti 内部随机生成（调用方不
+// SignRefreshToken 签一个新会话（登录）的 refresh token，jti 内部随机生成（调用方不
 // 需要也不应该自己起 jti——重复的 jti 会撞 refresh_tokens 的主键）。
-// 返回 token 字符串、它的 jti（登记进 repo.IssueRefreshToken/
-// RotateRefreshToken 用）与过期时间。
+// 返回 token 字符串、它的 jti（登记进 repo.IssueRefreshToken 用）与过期时间——
+// 过期时间同时是这个会话的总期限（轮换不续期，见 SignRefreshTokenUntil）。
 func (iss *Issuer) SignRefreshToken(sub string) (token, jti string, expiresAt time.Time, err error) {
+	return iss.SignRefreshTokenUntil(sub, time.Time{})
+}
+
+// SignRefreshTokenUntil 签一个轮换出的 refresh token：过期时间是 now + 有效期，但不晚于
+// notAfter（会话的总期限，登录时定下）。notAfter 为零值表示不设上限（新登录）。
+// ⚠️ 轮换必须走这里：每次轮换都给一整个有效期的话，只要客户端还在刷新，会话就永远不结束。
+func (iss *Issuer) SignRefreshTokenUntil(sub string, notAfter time.Time) (token, jti string, expiresAt time.Time, err error) {
 	jti = uuid.NewString()
 	now := time.Now()
 	expiresAt = now.Add(iss.refreshTTL)
+	if !notAfter.IsZero() && notAfter.Before(expiresAt) {
+		expiresAt = notAfter
+	}
 	claims := refreshClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   sub,

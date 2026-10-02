@@ -9,16 +9,21 @@ import (
 )
 
 // IssueRefreshToken 登记一个全新的 refresh token（没有轮换来源）——只在
-// POST /api/iam/token（登录，不是刷新）用一次。
+// POST /api/iam/token（登录，不是刷新）用一次。它的 expires_at 同时是这个会话的
+// 总期限（session_expires_at），之后每次轮换原样继承，见 RotateRefreshToken。
 func (r *Repo) IssueRefreshToken(ctx context.Context, jti, sub string, expiresAt time.Time) error {
 	err := besdk.WithTx(ctx, r.db, r.role, r.schema, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO refresh_tokens (jti, sub, expires_at) VALUES ($1, $2, $3)`,
+			`INSERT INTO refresh_tokens (jti, sub, expires_at, session_expires_at) VALUES ($1, $2, $3, $3)`,
 			jti, sub, expiresAt)
 		return err
 	})
 	return wrap("登记 refresh token", err)
 }
+
+// MintRefreshToken 由调用方（service 层）签一个轮换出的 refresh token：notAfter 是这个
+// 会话的总期限，新 token 不能晚于它过期。返回新 token 的 jti 与过期时间。
+type MintRefreshToken func(notAfter time.Time) (jti string, expiresAt time.Time, err error)
 
 // RotateRefreshToken 是刷新路径的核心：验证旧 jti 仍然有效，撤销它，
 // 登记一个指向它的新行——三步在同一个事务里原子完成（每次刷新都
@@ -40,15 +45,19 @@ func (r *Repo) IssueRefreshToken(ctx context.Context, jti, sub string, expiresAt
 // tx.Rollback() 会把刚刚那条"撤销全部 token"的 UPDATE 也一并回滚掉——
 // 保护措施本身被自己的失败路径撤销，是曾经在写这段代码时先写错、又
 // 立刻发现的一版。
-func (r *Repo) RotateRefreshToken(ctx context.Context, oldJTI, newJTI, sub string, newExpiresAt time.Time) error {
+//
+// ⚠️ 会话总期限：新 token 由 mint 签，notAfter 传旧行的 session_expires_at（登录时定下），
+// 新行原样继承它；过了它就判无效、只能重新登录。轮换不续期——否则只要客户端还在刷新，
+// 会话永远不结束。
+func (r *Repo) RotateRefreshToken(ctx context.Context, oldJTI, sub string, mint MintRefreshToken) error {
 	invalid := false
 	err := besdk.WithTx(ctx, r.db, r.role, r.schema, func(tx *sql.Tx) error {
 		var gotSub string
 		var revokedAt sql.NullTime
-		var expiresAt time.Time
+		var expiresAt, sessionExpiresAt time.Time
 		row := tx.QueryRowContext(ctx,
-			`SELECT sub, revoked_at, expires_at FROM refresh_tokens WHERE jti = $1 FOR UPDATE`, oldJTI)
-		switch scanErr := row.Scan(&gotSub, &revokedAt, &expiresAt); {
+			`SELECT sub, revoked_at, expires_at, session_expires_at FROM refresh_tokens WHERE jti = $1 FOR UPDATE`, oldJTI)
+		switch scanErr := row.Scan(&gotSub, &revokedAt, &expiresAt, &sessionExpiresAt); {
 		case scanErr == sql.ErrNoRows:
 			invalid = true
 			return nil
@@ -73,19 +82,23 @@ func (r *Repo) RotateRefreshToken(ctx context.Context, oldJTI, newJTI, sub strin
 			invalid = true
 			return nil
 		}
-		if !time.Now().Before(expiresAt) {
+		if now := time.Now(); !now.Before(expiresAt) || !now.Before(sessionExpiresAt) {
 			invalid = true
 			return nil
 		}
 
+		newJTI, newExpiresAt, err := mint(sessionExpiresAt)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE refresh_tokens SET revoked_at = now(), updated_at = now() WHERE jti = $1`,
 			oldJTI); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO refresh_tokens (jti, sub, expires_at, rotated_from) VALUES ($1, $2, $3, $4)`,
-			newJTI, sub, newExpiresAt, oldJTI)
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO refresh_tokens (jti, sub, expires_at, session_expires_at, rotated_from) VALUES ($1, $2, $3, $4, $5)`,
+			newJTI, sub, newExpiresAt, sessionExpiresAt, oldJTI)
 		return err
 	})
 	if err != nil {
