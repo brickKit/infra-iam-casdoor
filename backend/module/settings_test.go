@@ -36,6 +36,7 @@ func validConfig(t *testing.T) map[string]string {
 	t.Helper()
 	priv, _ := pemPrivate(t)
 	return map[string]string{
+		"PG_USER":                   "iam_login", // 故意不是 "<PG_SCHEMA>_rw"：角色只来自 PG_USER
 		"CASDOOR_BASE_URL":          "http://host.docker.internal:8000",
 		"CASDOOR_ADMIN_PASSWORD":    "pw",
 		"WEBHOOK_SHARED_SECRET":     "secret",
@@ -57,8 +58,8 @@ func TestLoadSettings_齐全的配置按值解析(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.schema != "infra_iam_casdoor" || s.role != "infra_iam_casdoor_rw" {
-		t.Fatalf("schema/role 默认值不对：%q / %q", s.schema, s.role)
+	if s.schema != "infra_iam_casdoor" || s.role != "iam_login" {
+		t.Fatalf("schema 应取默认值、角色应取 PG_USER：%q / %q", s.schema, s.role)
 	}
 	if s.accessTTL != 5*time.Minute || s.refreshTTL != time.Hour {
 		t.Fatalf("TTL 没按配置值：%v / %v", s.accessTTL, s.refreshTTL)
@@ -98,6 +99,27 @@ func TestLoadSettings_缺必填键返回error点名而不panic(t *testing.T) {
 	for _, k := range []string{"CASDOOR_ADMIN_PASSWORD", "WEBHOOK_SHARED_SECRET"} {
 		if !strings.Contains(err.Error(), k) {
 			t.Fatalf("报错应点名 %s：%v", k, err)
+		}
+	}
+}
+
+// 事务角色是 PG_USER，不从 PG_SCHEMA 推（部署方给 schema 与角色怎么起名都行）；缺 PG_USER
+// 时报错点名，不退回 "<schema>_rw"。
+func TestLoadSettings_事务角色取PG_USER_缺了报错(t *testing.T) {
+	m := validConfig(t)
+	m["PG_SCHEMA"] = "iam_custom"
+	m["PG_USER"] = "someone_else"
+	s, err := loadSettings(besdk.NewConfig(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.schema != "iam_custom" || s.role != "someone_else" {
+		t.Fatalf("schema/role 应为 iam_custom / someone_else，实际 %q / %q", s.schema, s.role)
+	}
+	for _, v := range []string{"", "  "} {
+		m["PG_USER"] = v
+		if _, err := loadSettings(besdk.NewConfig(m)); err == nil || !strings.Contains(err.Error(), "PG_USER") {
+			t.Fatalf("PG_USER=%q 应报错并点名 PG_USER，实际 %v", v, err)
 		}
 	}
 }

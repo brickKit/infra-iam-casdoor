@@ -39,11 +39,12 @@ type settings struct {
 	enabledComponents []string
 }
 
-// requiredKeys 是 configSchema 里没有默认值的本组件自有键（PG_* / NATS_URL /
-// IAM_JWKS_URL 由 SDK 读，不在这里）。brickKit 在它们填好之前拒绝启动，这里
-// 再核对一次是为了缺键时返回 error、不 panic。
+// requiredKeys 是 configSchema 里没有默认值、由本模块读的键（其余 PG_* / NATS_URL /
+// IAM_JWKS_URL 由 SDK 读，不在这里；PG_USER 两边都读：SDK 拿它登录，这里拿它当
+// 事务角色）。brickKit 在它们填好之前拒绝启动，这里再核对一次是为了缺键时返回
+// error、不 panic。
 var requiredKeys = []string{
-	"CASDOOR_BASE_URL", "CASDOOR_ADMIN_PASSWORD", "WEBHOOK_SHARED_SECRET",
+	"PG_USER", "CASDOOR_BASE_URL", "CASDOOR_ADMIN_PASSWORD", "WEBHOOK_SHARED_SECRET",
 	"APP_TOKEN_SIGNING_KEY_PEM", "ENABLED_COMPONENTS",
 }
 
@@ -62,7 +63,11 @@ func loadSettings(cfg besdk.Config) (settings, error) {
 
 	var s settings
 	s.schema = cfg.StringOr("PG_SCHEMA", "infra_iam_casdoor")
-	s.role = s.schema + "_rw"
+	// 每个事务 SET LOCAL ROLE 切到的角色就是配置的 PG_USER，不从 schema 名推：单跑时它是
+	// 登录角色；进外壳后外壳以自己的角色登录，成员自己那份配置里的 PG_USER 仍是成员的角色。
+	// 部署方怎么给 schema 与角色起名，组件都不需要知道。
+	s.role, _ = cfg.String("PG_USER")
+	s.role = strings.TrimSpace(s.role)
 
 	s.casdoorBaseURL, _ = cfg.String("CASDOOR_BASE_URL")
 	s.casdoorAdminUsername = cfg.StringOr("CASDOOR_ADMIN_USERNAME", "admin")
