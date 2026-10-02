@@ -23,9 +23,9 @@ Casdoor 与项目其余部分之间的适配层。Casdoor 证明"这个人是谁
 
 - **PostgreSQL**：schema `infra_iam_casdoor`（按 schema 惯例还会有 `infra_iam_casdoor_archive`，目前没有任何东西写它）、登录角色 `infra_iam_casdoor_rw`（在该 schema 上有 `USAGE` 与 `CREATE`）及其密码。迁移以这个角色运行并建表，所以表归它所有；组件运行时自己建未来的分区，需要这份所有权。BrickKit 不建这些；在 BrickEnterprise 组装项目里，`make dev-env` 把密码写进 `.env`，`make db-init` 建 schema、角色与授权。
 - **NATS** 可经 `NATS_URL` 访问：事件经 outbox 表与后台推送发出；NATS 不在时组件照样启动，事件在 outbox 里等。
-- **Casdoor** 在跑，本组件能经 `CASDOOR_BASE_URL` 访问到它，Casdoor 内置组织里有一个管理员账号（`CASDOOR_ADMIN_USERNAME` / `CASDOOR_ADMIN_PASSWORD`）。Casdoor 的 `origin` 配置必须是带端口的完整 URL：它的 OIDC 发现文档里的 issuer 与 JWKS 地址都由它拼出。组织 `CASDOOR_ORG_NAME`、应用 `CASDOOR_APP_NAME` 与 webhook 由本组件自己建；Casdoor 还没起来时本组件在后台反复重试，在第一次连上 Casdoor 之前换 token 回 `503`。
+- **Casdoor** 在跑，本组件能经 `CASDOOR_BASE_URL` 访问到它，Casdoor 内置组织里有一个管理员账号（`CASDOOR_ADMIN_USERNAME` / `CASDOOR_ADMIN_PASSWORD`）。Casdoor 镜像自带一个人人皆知的默认管理员口令：生产环境必须把 Casdoor 管理员的口令与 `CASDOOR_ADMIN_PASSWORD` 一起改掉（两边对不上时，启动记一条 Error，组织、应用、webhook 都不对账，`BatchGetUsers` 回 `UNAVAILABLE`；换 token 不受影响）。Casdoor 的 `origin` 配置必须是带端口的完整 URL：它的 OIDC 发现文档里的 issuer 与 JWKS 地址都由它拼出。组织 `CASDOOR_ORG_NAME`、应用 `CASDOOR_APP_NAME` 与 webhook 由本组件自己建；Casdoor 还没起来时本组件在后台反复重试，在第一次连上 Casdoor 之前换 token 回 `503`。
 - **签名密钥**：一把 PEM 格式的 RSA 私钥（PKCS #1 或 PKCS #8），例如 `openssl genrsa 2048`。重启前后、各副本之间必须是同一把，否则重启前签出的 token 全部验不过。作为密钥文件保存，用 `file://` 引用。
-- **webhook 回调的通路**：Casdoor 不在项目的网络里，只能经宿主机端口回调本组件。给本组件的部署条目写 `expose: true`（宿主机端口 8200），`WEBHOOK_CALLBACK_URL` 写成从 Casdoor 容器看过去的这个端口，以 `/api/iam/webhooks/casdoor` 结尾。Casdoor 容器必须能解析这个主机名（Linux 上给它的 `extra_hosts` 加 `host.docker.internal:host-gateway`）。进外壳托管后，本组件的端口不能单独开放，见下面的 `WEBHOOK_CALLBACK_URL`。回调地址留空也合法：用户照样能登录，只是不发 `infra.iam.user.*.v1` 事件。
+- **webhook 回调的通路**：Casdoor 必须能访问到本组件。把 Casdoor 容器接进项目的网络（`brickkit-<project>-net`，由 `brickkit up` 建；Casdoor 先起时，用同样的 Compose 标签预先建好），`WEBHOOK_CALLBACK_URL` 写本组件自己的版本化服务名 `http://infra-iam-casdoor-2-0-0:8200/api/iam/webhooks/casdoor`。这个名字在单独运行与外壳托管时都能解析（成员服务名是外壳容器的网络别名），不用开放端口；本组件每次发版都要跟着改，同 `IAM_JWKS_URL`。回调地址留空也合法：用户照样能登录，只是不发 `infra.iam.user.*.v1` 事件。
 - **`infra/authz`** 在跑（唯一的依赖，见下）。
 
 ## 依赖说明
@@ -55,7 +55,7 @@ Casdoor 本身不是依赖：它是项目之外的资源，经 `CASDOOR_BASE_URL
 | `CASDOOR_ORG_NAME` | 存放项目用户的 Casdoor 组织；默认 `brickkit`。不存在就建。 |
 | `CASDOOR_APP_NAME` | 用户登录所用的 Casdoor 应用（授权码流程，不开密码授权）；默认 `brickkit-app`。不存在就建；已存在的不改。 |
 | `WEBHOOK_SHARED_SECRET` | Casdoor 每次回调在 `X-Shared-Secret` header 里带的值；没带或不对的回调一律 `401`。密钥：写 `${…}` 引用，取一个足够长的随机串。必填。 |
-| `WEBHOOK_CALLBACK_URL` | Casdoor 发用户 webhook 的地址（从 Casdoor 看过去），以 `/api/iam/webhooks/casdoor` 结尾。每次启动：webhook 不存在就建，地址、密钥或启用状态与配置不同就改写。为空（默认）时什么都不建，已有的 webhook 也不动：不发用户事件。本组件进外壳托管期间，它的端口不能单独开放，地址得另找通路到外壳。 |
+| `WEBHOOK_CALLBACK_URL` | Casdoor 发用户 webhook 的地址（从 Casdoor 看过去），以 `/api/iam/webhooks/casdoor` 结尾。每次启动：webhook 不存在就建，地址、密钥或启用状态与配置不同就改写。为空（默认）时什么都不建，已有的 webhook 也不动：不发用户事件。写本组件的版本化服务名（见部署前准备），外壳托管时同样可用；宿主机端口不行，外壳成员的端口不能单独开放。 |
 | `APP_TOKEN_SIGNING_KEY_PEM` | 签应用 token 与 refresh token 的 RSA 私钥，PEM。密钥、多行：`file://` 引用密钥文件。必填。它在 JWKS 里的 key ID 是 RFC 7638 指纹，重启前后不变。 |
 | `APP_TOKEN_PREVIOUS_PUBLIC_KEY_PEM` | 密钥轮换期间上一把钥匙的公钥（PEM 公钥或证书）；默认为空。配了之后 JWKS 同时挂两把，上一把签的 refresh token 仍被认。换钥之后过了最长的 token 有效期，就清空它。 |
 | `APP_TOKEN_TTL_SECONDS` | 应用 token 的有效期，正整数秒；默认 `600`。也是 `infra/authz` 停摆时用户还能继续用多久。不是正整数时组件启动即失败。 |
@@ -71,4 +71,4 @@ Casdoor 本身不是依赖：它是项目之外的资源，经 `CASDOOR_BASE_URL
 
 ## 外壳声明
 
-不是外壳。可以由 Go 外壳托管（BrickEnterprise 项目里是 `be/go-infra`），也可以单独运行；两种方式代码相同。进外壳托管后它的端口不能单独开放，这一点影响 Casdoor 的 webhook（见 `WEBHOOK_CALLBACK_URL`）。
+不是外壳。可以由 Go 外壳托管（BrickEnterprise 项目里是 `be/go-infra`），也可以单独运行；两种方式代码相同。进外壳托管后它的端口不能单独开放；Casdoor 经成员服务名回调 webhook，外壳同样应答这个名字（见 `WEBHOOK_CALLBACK_URL`）。

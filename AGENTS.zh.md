@@ -77,7 +77,8 @@ Casdoor 测试在共享的 Casdoor 里用带时间戳的名字建组织、应用
 | 缓存 `ResolveClaims` 的结果，或 authz 不在时退回上一次的 claims | 什么都不报错；改了角色之后刷新出来的 token 还是旧角色，组件回 `401 token_stale`，前端再刷新，永远转下去 | claims 必须是当前的；停摆用 `503` 回答，不用旧角色回答 |
 | 在拿到 claims 之前就轮换 refresh token | authz 抖一下：刷新回 `503`，客户端用同一个 token 重试，撞上重放检测，这个人名下全部会话被作废 | `RefreshToken` 先验签、拿 claims、签名，最后轮换；`TestREST_authz不可达时刷新回503且不消耗refreshToken` |
 | 用唯一约束给 webhook 投递去重，或去掉 `RecordDeliveryAndPublish` 里的 advisory 锁 | 重复悄悄通过；同一条用户事件到下游两次 | `webhook_deliveries` 是分区表，唯一索引必须带 `received_at`，而每次重投的它都不同 |
-| 把 `webhook_deliveries.payload` 改成 JSONB，或拒收解析不了的投递 | 一条格式不对的投递让 insert 失败；事件丢了，Casdoor 永远重投 | payload 形状没有完全核实（见 `docs/design.zh.md`）；存成 `TEXT`，标 `IGNORED` / `ERROR` |
+| 把 `webhook_deliveries.payload` 改成 JSONB，或拒收解析不了的投递 | 一条格式不对的投递让 insert 失败；事件丢了，Casdoor 永远重投 | 真机只见过部分动作（见 `docs/design.zh.md`）；payload 存成 `TEXT`，标 `IGNORED` / `ERROR` |
+| 只按 JSON 对象解投递体里的 `object` | 每一条真实投递都存成 `IGNORED`（"找不到用户标识"），`infra.iam.user.*.v1` 一条都发不出去，门禁全绿 | Casdoor 发来的 `object` 是编码成 JSON 字符串的；`decodeUser` 两种形式都认，`TestWebhookUserPayload_object是JSON字符串时也能取出用户字段` |
 | 把 Casdoor 的 JWKS 地址写死，或原样使用发现文档里的 `jwks_uri` | 换 token 永远回 `503`；keyfunc 报 `404` 或连到自己 | Casdoor 的路径是 `/.well-known/jwks`（没有 `.json`），发现文档里的主机是 Casdoor 的 `origin`，本容器未必够得着；`rebaseHost` 保留路径、换成 `CASDOOR_BASE_URL` 的主机 |
 | 给 `bootstrap` 建的应用加上 `password` 授权 | 能用，但登录用的应用从此接受任何人发来的密码 | 浏览器走授权码流程；只有 `casdoor_integration_test.go` 与 `scripts/seed.sh` 里的测试应用开密码授权 |
 | refresh token 与应用 token 用同样的 claims、不检查 `typ` | 应用 token 被当成 refresh token 接受，或者反过来 | 两者用同一把钥匙签；`TestVerifyRefreshToken_不接受应用token冒充` |

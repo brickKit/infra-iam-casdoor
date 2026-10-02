@@ -79,7 +79,7 @@ func (s *Service) EnabledComponents() []string { return s.enabled }
 // header 名是 module 包的固定常量（启动对账建 webhook 时用的也是它）。
 func (s *Service) WebhookSharedSecretHeader() string { return s.sharedHeader }
 func (s *Service) WebhookSharedSecretValid(v string) bool {
-	// 常数时间比较：这个端点经 expose 的宿主机端口可达，逐字节提前返回的比较
+	// 常数时间比较：这个端点对同一网络里的任何容器都可达，逐字节提前返回的比较
 	// 会把"猜对了前几位"泄露成响应时间差。
 	return v != "" && subtle.ConstantTimeCompare([]byte(v), []byte(s.sharedSecret)) == 1
 }

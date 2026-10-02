@@ -356,9 +356,9 @@ func (c *AdminClient) GetWebhook(ctx context.Context, name string) (*Webhook, er
 
 // CreateWebhook 建一个用户增删改事件的回调，用**自定义 header** 携带共享
 // 密钥——Casdoor 的 webhook 没有内置签名，自定义 header 是唯一能用的认证方式。
-// callbackURL 由调用方（bootstrap 包）传入：Casdoor 不在本组件所在的 Docker
-// 网络里，回调地址必须是"从 Casdoor 那一侧能访问到本组件对外暴露的端口"的地址
-// （部署条目 expose: true，Casdoor 经宿主机访问），不能自动推导。
+// callbackURL 由调用方（bootstrap 包）传入：从 Casdoor 那一侧能访问到本组件的地址，
+// 不能自动推导。项目里的做法是把 Casdoor 接进项目网络、写本组件的版本化服务名
+// （外壳托管时它是外壳容器的网络别名，同样可达），见 docs/design.md。
 func (c *AdminClient) CreateWebhook(ctx context.Context, name, organization, callbackURL, sharedSecretHeaderName, sharedSecretValue string) error {
 	_, err := c.post(ctx, "/api/add-webhook",
 		c.webhookBody(name, organization, callbackURL, sharedSecretHeaderName, sharedSecretValue))
