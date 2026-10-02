@@ -186,6 +186,10 @@ func (s *Service) issueFor(ctx context.Context, sub string) (*TokenPair, error) 
 		return nil, err
 	}
 	if err := s.repo.IssueRefreshToken(ctx, jti, sub, expiresAt); err != nil {
+		if errors.Is(err, repo.ErrSubjectDisabled) {
+			// 停用的人手里还没过期的 Casdoor id_token 仍然验签通过，这里是最后一道关
+			return nil, fmt.Errorf("%w: 用户在 Casdoor 里已停用", ErrUnauthenticated)
+		}
 		return nil, err
 	}
 	return &TokenPair{AccessToken: accessToken, RefreshToken: refreshToken, ExpiresIn: expiresIn}, nil
@@ -282,9 +286,13 @@ func (s *Service) publishCurrentState(ctx, rctx context.Context, tx *sql.Tx, use
 	if err != nil {
 		return "", "", err
 	}
+	if err := s.repo.SetUserDisabledTx(ctx, tx, sub, ev.Subject == subjectUserDisabled); err != nil {
+		return "", "", err
+	}
 	if ev.Subject == subjectUserDisabled {
 		// 在 Casdoor 里停用、删除或已经不在的人：同一个事务里作废他全部 refresh token，下一次
-		// 刷新就是 401。不撤的话他手里的会话一直刷新到会话期限（发布前审查 I1b）。
+		// 刷新就是 401。不撤的话他手里的会话一直刷新到会话期限（发布前审查 I1b）。上面记下的
+		// disabled 让他手里的旧 Casdoor id_token 也换不出新会话（IssueRefreshToken）。
 		if err := repo.RevokeAllRefreshTokensForSubTx(ctx, tx, sub); err != nil {
 			return "", "", err
 		}

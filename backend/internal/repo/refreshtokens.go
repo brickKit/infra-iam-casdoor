@@ -11,10 +11,22 @@ import (
 // IssueRefreshToken 登记一个全新的 refresh token（没有轮换来源）——只在
 // POST /api/iam/token（登录，不是刷新）用一次。它的 expires_at 同时是这个会话的
 // 总期限（session_expires_at），之后每次轮换原样继承，见 RotateRefreshToken。
+// 这个人最近一次投递处理时在 Casdoor 里是停用的，返回 ErrSubjectDisabled、什么都不写。
 func (r *Repo) IssueRefreshToken(ctx context.Context, jti, sub string, expiresAt time.Time) error {
 	err := besdk.WithTx(ctx, r.db, r.role, r.schema, func(tx *sql.Tx) error {
 		if err := lockSubTokensTx(ctx, tx, sub); err != nil {
 			return err
+		}
+		// 在按人锁之内查：停用投递的事务也是先拿这把锁再撤销，两边谁先谁后，新登记的
+		// token 都不会漏网。
+		var disabled bool
+		switch err := tx.QueryRowContext(ctx,
+			`SELECT disabled FROM user_event_versions WHERE sub = $1`, sub).Scan(&disabled); {
+		case err == sql.ErrNoRows:
+		case err != nil:
+			return err
+		case disabled:
+			return ErrSubjectDisabled
 		}
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO refresh_tokens (jti, sub, expires_at, session_expires_at) VALUES ($1, $2, $3, $3)`,

@@ -38,3 +38,11 @@ func (r *Repo) SubByNameTx(ctx context.Context, tx *sql.Tx, owner, name string) 
 	}
 	return sub, wrap("按用户名找 sub", err)
 }
+
+// SetUserDisabledTx 记下这个人最近一次处理投递时是不是停用（发的是 disabled 事件）。调用方
+// 已经用 NextUserEventVersionTx 锁住了这一行。
+func (r *Repo) SetUserDisabledTx(ctx context.Context, tx *sql.Tx, sub string, disabled bool) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE user_event_versions SET disabled = $2, updated_at = now() WHERE sub = $1`, sub, disabled)
+	return wrap("记下用户是否停用", err)
+}

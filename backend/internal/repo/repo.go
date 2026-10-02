@@ -22,6 +22,10 @@ var ErrInvalidArgument = errors.New("参数不合法")
 // HTTP/gRPC 状态码，见 status.go）。
 var ErrRefreshTokenInvalid = errors.New("refresh token 无效")
 
+// ErrSubjectDisabled：这个人最近一次投递处理时在 Casdoor 里是停用、删除或已经不在的，
+// 不再给他登记新会话（service 层翻成 401）。
+var ErrSubjectDisabled = errors.New("用户在 Casdoor 里已停用")
+
 type Repo struct {
 	db     *sql.DB
 	role   string

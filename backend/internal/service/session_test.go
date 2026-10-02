@@ -90,3 +90,27 @@ func TestWebhook_停用或删除用户_他的refreshToken立即作废(t *testing
 		})
 	}
 }
+
+// 停用之后，这个人手里还没过期的 Casdoor id_token 也不能再换出新会话（Casdoor 的 id_token
+// 一般能用一天，停用前拿到的那张照样验签通过）。重新启用、投递处理完之后又可以登录。
+func TestExchangeToken_Casdoor里停用的人不能拿旧id_token换新会话_重新启用后恢复(t *testing.T) {
+	svc, _ := newServiceWithAuthz(t, time.Hour)
+	ctx := context.Background()
+	fake := newFakeCasdoorJWKS(t)
+	svc.SetIDVerifier(fake.verifier(t))
+	users := withUsers(svc)
+	sub := uniqueID("casdoor-uuid")
+	idToken := fake.sign(t, sub) // 停用之前拿到的 id_token
+
+	users.put(casdoor.User{ID: sub, Owner: "brickkit", Name: sub, IsForbidden: true})
+	deliver(t, svc, deliveryWithObject(t, "update-user", map[string]any{"id": sub}))
+	if _, err := svc.ExchangeToken(ctx, idToken); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("停用后拿旧 id_token 换 token 期望 ErrUnauthenticated（401），实际 %v", err)
+	}
+
+	users.put(casdoor.User{ID: sub, Owner: "brickkit", Name: sub, DisplayName: "复职"})
+	deliver(t, svc, deliveryWithObject(t, "update-user", map[string]any{"id": sub}))
+	if _, err := svc.ExchangeToken(ctx, idToken); err != nil {
+		t.Fatalf("重新启用后应能登录，实际 %v", err)
+	}
+}
