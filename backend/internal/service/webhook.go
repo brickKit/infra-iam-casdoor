@@ -10,8 +10,9 @@ import (
 // webhookUserPayload 解析 Casdoor 的 webhook 投递体。
 //
 // 投递体就是 Casdoor 的 Record 对象（2026-10-02 真机抓到过 login 与 update-user 两种）：
-// action 是动作名；object 是**被 JSON 编码成字符串**的请求体——update-user / add-user
-// 时就是用户对象（口令已由 Casdoor 掩码成 "***"），login 时是登录表单（没有用户 id）；
+// action 是动作名；object 是**被 JSON 编码成字符串**的请求体——调用方发了整个用户对象的
+// update-user 时就是那个对象（口令已由 Casdoor 掩码成 "***"），login 时是登录表单，只发
+// owner 与 name 的 add-user / delete-user 时也没有用户 id（这几种都标 IGNORED）；
 // user 是发起操作的账号名（管理员改别人时是 "admin"，不是被改的人）；extendedUser 在
 // isUserExtended=false 时为 null。所以用户字段从 object 里取，字符串与对象两种写法都认。
 // 投递 ID 是否稳定仍未核实，去重键用内容哈希（见 http 包的 dedupKeyFor）。

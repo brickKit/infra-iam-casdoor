@@ -56,7 +56,7 @@ REST，路径是 IAM 族共用的固定路径；没有一条需要权限键，�
 
 **Casdoor 怎么到达 webhook。** Casdoor 是基础资源，不是组件，默认不在项目的网络里。把它接进项目网络，`WEBHOOK_CALLBACK_URL` 写本组件的版本化服务名。经宿主机端口（`expose: true` 加 `host.docker.internal`）的做法没有采用：它只在单独运行时成立，外壳成员的端口不能单独开放，而服务名同时也是外壳容器的网络别名。代价是地址带版本号，每次发版都要改，同 `IAM_JWKS_URL`。
 
-**一次投递长什么样**（在真实 Casdoor 上抓到的）：请求体是 Casdoor 的 `Record`。`action` 是动作名（`update-user`、`login` 等）；`object` 是**编码成 JSON 字符串的**请求体，`update-user` / `add-user` 时是整个用户对象（口令已被掩码成 `***`），`login` 时是登录表单、没有用户 ID；`user` 是发起操作的账号（管理员改别人时是 `admin`），不是被操作的用户。所以用户字段从 `object` 里取，字符串与对象两种形式都认。经管理 API 做的改动同样会触发投递。
+**一次投递长什么样**（在真实 Casdoor 上抓到的）：请求体是 Casdoor 的 `Record`。`action` 是动作名（`update-user`、`login` 等）；`object` 是**编码成 JSON 字符串的**请求体，所以内容就是调用方发了什么：发送整个用户对象的 `update-user` 时是那个对象（口令已被掩码成 `***`），`login` 时是登录表单、没有用户 ID；`user` 是发起操作的账号（管理员改别人时是 `admin`），不是被操作的用户。所以用户字段从 `object` 里取，字符串与对象两种形式都认。经管理 API 做的改动同样会触发投递。
 
 **两个 token。** 认证留在浏览器与 Casdoor 之间；应用 token 必须带 `roles[]`、`dept_path`、`org_id`，而这些只有 authz 知道。所以：(1) 浏览器从 Casdoor 拿到 id_token；(2) 前端到本组件换一次：本组件对着 Casdoor 的 JWKS 验它（只认 RS256，校验 issuer），调 authz `ResolveClaims`，用自己的钥匙签出应用 token；(3) 业务组件对着本组件的 JWKS 验应用 token；(4) 刷新也到这里，再调一次 `ResolveClaims`，所以角色永远是当前的。第 1 步之后 Casdoor 就退出了。
 
@@ -139,7 +139,9 @@ Casdoor 的 webhook 投递按请求体哈希去重（Casdoor 有没有稳定的�
 
 | 问题 | 目前的答案 |
 |---|---|
-| Casdoor 有没有稳定的投递 ID、失败会不会重投？ | 未确认。见过的投递里记录的 `id` 都是 `0`，所以去重用请求体哈希（请求体带 `name` 与 `createdTime`，两次不同的变化不会字节完全相同）；`add-user`、`delete-user`、`signup` 这几个动作名取自 Casdoor 源码，真机只见过 `update-user` 与 `login` |
+| Casdoor 有没有稳定的投递 ID？ | 没有：见过的每一次投递里记录的 `id` 都是 `0`，所以去重用请求体哈希（请求体带记录的 `name` 与 `createdTime`，两次不同的变化不会字节完全相同） |
+| 本组件停着期间的投递会丢 | 真机所见：Casdoor 大约每 30 秒成批发一次 webhook，发送失败记成一条单独的 `send-webhook` 记录，原记录不重投。本组件停机或重新部署期间的变化永远不会被桥接。启动时对账用户（比对 Casdoor 与下游最后收到的）需要一份用户副本，而本组件刻意不存；未定 |
+| 不带用户 ID 的 `add-user` / `delete-user` 投递 | 真机所见：`object` 是请求体，只发 `owner` 与 `name` 的管理 API 调用不带 `id`，投递存成 `IGNORED`，`created` / `disabled` 事件发不出去。新建的用户可以按 owner 与 name 反查；已删除的没有用户副本就查不出来。Casdoor 自己的界面发不发 ID 没有核对 |
 | `infra.iam.login.v1` 已声明但从未发布 | 还没有消费者（审计组件在规划中）；有了就在换 token 时发 |
 | 过期与作废的 refresh token、旧的密钥元数据、旧的 webhook 投递从不删除或归档 | 这些表增长缓慢（受用户数与 Casdoor 活动约束）；计划在分区循环旁边加一个清理循环 |
 | 不校验 Casdoor id_token 的 audience | 同一个 Casdoor 实例里的任何应用都能产出本组件接受的 id_token；只要这个 Casdoor 只服务本项目就可以接受。拿应用的 client ID 校验 `aud` 就能堵上 |

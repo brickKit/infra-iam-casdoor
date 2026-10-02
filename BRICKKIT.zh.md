@@ -66,7 +66,7 @@ Casdoor 本身不是依赖：它是项目之外的资源，经 `CASDOOR_BASE_URL
 
 - `contracts/infra/iam/v1/iam.proto` — gRPC `infra.iam.v1.IamService`，IAM 族的契约（名字里不带 Casdoor，换一个 IAM 实现也能原样提供）：`BatchGetUsers`（sub 列表 → 显示名、邮箱、手机号、IM 账号；每次调用都回源 Casdoor，查不到的 sub 省略；Casdoor 管理会话未就绪或 Casdoor 出错时回 `UNAVAILABLE`）与 `GetTenantFeatures`（与 REST 路由同一份清单）。Go 包是独立模块 `github.com/brickKit/infra-iam-casdoor/gen/infra/iam`。
 - `contracts/iam.openapi.yaml` — REST，路径是 IAM 族共用的固定路径。都不需要权限键：本组件就是"还没有身份"与"有身份"之间的那道门。`POST /api/iam/token`（公开；请求体不对 `400`，Casdoor token 无效 `401`，Casdoor 或 authz 不可达 `503`）、`POST /api/iam/token/refresh`（公开；refresh token 无效、已作废、已过期或被重放 `401`，authz 不可达 `503`）、`POST /api/iam/logout`（需登录；幂等）、`GET /.well-known/jwks.json`（公开；给其余组件，不经网关）、`GET /api/tenant/features`（公开；前端登录前就要读）、`POST /api/iam/webhooks/casdoor`（公开路由，靠共享密钥 header 认证；只给 Casdoor，不经网关）。
-- `contracts/events/iam.events.json` — 经 outbox 发布：`infra.iam.user.created.v1`、`infra.iam.user.updated.v1`（带只增不减的 `version`）、`infra.iam.user.disabled.v1`（删除用户也发这条）。`infra.iam.login.v1` 已声明、尚未发布。消费：`infra.authz.user_role.changed.v1`，`change_type: kicked` 时作废这个人名下全部 refresh token；其余变化不动 refresh token，下次刷新自然拿到新角色。
+- `contracts/events/iam.events.json` — 经 outbox 发布：`infra.iam.user.created.v1`、`infra.iam.user.updated.v1`（带只增不减的 `version`）、`infra.iam.user.disabled.v1`（删除用户也发这条）。事件要求 Casdoor 的投递里带着用户 ID：发送整个用户对象的修改带着它，请求体只有 owner 与 name 的 `add-user` / `delete-user` 调用不带，这样的投递存成 `IGNORED`。Casdoor 大约每 30 秒成批发一次 webhook，发送失败不重投，所以本组件停着期间的变化不会被桥接。`infra.iam.login.v1` 已声明、尚未发布。消费：`infra.authz.user_role.changed.v1`，`change_type: kicked` 时作废这个人名下全部 refresh token；其余变化不动 refresh token，下次刷新自然拿到新角色。
 - `assembly.yaml` — 本项目的元数据：换 token、刷新、登出、features 四条网关路由；没有权限键、没有菜单；schema 与角色；`data_scopes: none`。
 
 ## 外壳声明
