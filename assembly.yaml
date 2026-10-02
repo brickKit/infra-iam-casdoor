@@ -5,10 +5,10 @@ tier: backend
 
 edge_routes:
   # ⚠️ /.well-known/jwks.json 与 /api/iam/webhooks/casdoor 刻意不出现在
-  # 这里——前者只被其他组件的 be-sdk（内网直连）与它们自己的 iamJwksUrl
-  # 消费，后者只被 Casdoor 官方容器直连（走 expose 的宿主机端口 + 桥接网关
-  # IP，Casdoor 是带外容器、与本组件不在同一个 Docker 网络），两者都不经
-  # 公网网关暴露给最终用户浏览器（同 infra-authz 的 /authz/bundle 判据）。
+  # 这里——前者只被其他组件的 be-sdk 按各自的 IAM_JWKS_URL 在项目网络里直连，
+  # 后者只被 Casdoor 按 WEBHOOK_CALLBACK_URL 直连（Casdoor 接进项目网络，地址
+  # 是本组件的版本化服务名，单独运行与外壳托管都一样），两者都不经公网网关
+  # 暴露给最终用户浏览器（同 infra-authz 的 /authz/bundle 判据）。
   - { path: /api/iam/token, auth: none }           # 换应用 token，目的就是"从没有身份变成有"
   - { path: /api/iam/token/refresh, auth: none }    # 刷新——凭 refresh token 本身认证，不是会话
   - { path: /api/iam/logout, auth: required }       # 仅需登录（besdk.Authenticated）
@@ -21,8 +21,8 @@ data:
   role:   infra_iam_casdoor_rw        # 登录角色，`PG_USER` 的值
 
 data_scopes: none                     # 本组件不存用户表、不存角色，refresh_tokens/
-                                       # signing_keys/webhook_deliveries/bootstrap_state 四张表
-                                       # 都是纯运维数据，不做行级过滤
+                                       # signing_keys/webhook_deliveries/bootstrap_state/
+                                       # user_event_versions 五张表都是纯运维数据，不做行级过滤
 
 permissions: []                       # 本组件的 REST 面全部是 besdk.Public/besdk.Authenticated
                                        # 没有一个对应具体业务权限键——它自己就是
