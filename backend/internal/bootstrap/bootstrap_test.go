@@ -3,7 +3,6 @@ package bootstrap
 import (
 	"context"
 	"database/sql"
-	"log/slog"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -15,8 +14,6 @@ import (
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/repo"
 )
-
-func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(os.Stderr, nil)) }
 
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -86,12 +83,12 @@ func TestRun_每一步都幂等可重跑(t *testing.T) {
 		WebhookSharedHeader: "X-Shared-Secret", WebhookSharedSecretVal: "test-secret",
 	}
 
-	Run(ctx, c, r, cfg, testLogger())
+	Run(ctx, c, r, cfg)
 	assertBootstrapped(t, ctx, c, r, orgName, appName, whName)
 
 	// 第二遍：全部应该是"已存在，跳过创建"，不应该报错、也不应该产生
 	// Casdoor 侧的重名冲突。
-	Run(ctx, c, r, cfg, testLogger())
+	Run(ctx, c, r, cfg)
 	assertBootstrapped(t, ctx, c, r, orgName, appName, whName)
 }
 
@@ -148,7 +145,7 @@ func TestRun_webhookCallbackURL为空时跳过webhook步骤(t *testing.T) {
 	Run(ctx, c, r, Config{
 		OrgName: orgName, AppName: appName, AppRedirectURIs: []string{"http://localhost:3000/callback"},
 		WebhookName: "unused", WebhookCallbackURL: "", // 留空
-	}, testLogger())
+	})
 
 	if exists, err := c.OrganizationExists(ctx, orgName); err != nil || !exists {
 		t.Fatalf("组织应该照样建成：exists=%v, err=%v", exists, err)
@@ -184,11 +181,11 @@ func TestRun_回调地址或共享密钥变了再跑一遍会更新webhook(t *te
 		WebhookName: whName, WebhookCallbackURL: "http://old-host.test:8200/api/iam/webhooks/casdoor",
 		WebhookSharedHeader: "X-Shared-Secret", WebhookSharedSecretVal: "old-secret",
 	}
-	Run(ctx, c, r, cfg, testLogger())
+	Run(ctx, c, r, cfg)
 
 	cfg.WebhookCallbackURL = "http://new-host.test:8200/api/iam/webhooks/casdoor"
 	cfg.WebhookSharedSecretVal = "new-secret"
-	Run(ctx, c, r, cfg, testLogger())
+	Run(ctx, c, r, cfg)
 
 	wh, err := c.GetWebhook(ctx, whName)
 	if err != nil || wh == nil {

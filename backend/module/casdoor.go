@@ -30,9 +30,10 @@ func registerSigningKeys(ctx context.Context, svc *service.Service, cfg settings
 	}
 }
 
-// connectCasdoorAdmin 在后台登录 Casdoor 管理 API（重试直到成功），成功后交给
-// gRPC BatchGetUsers 使用，并跑一遍启动对账（组织、应用、webhook）。登录成功
-// 之前 BatchGetUsers 回 Unavailable。
+// connectCasdoorAdmin 在后台登录 Casdoor 管理 API，成功后交给 gRPC BatchGetUsers
+// 使用（在此之前它回 Unavailable），再跑启动对账（组织、应用、webhook）。登录失败、
+// 或对账途中 Casdoor 不可达，都整轮重来（对账每一步先查再建，重跑安全）；对账被
+// Casdoor 拒绝或写库失败要人处理，记一条 Error、不再重试（重试也是同样的结果）。
 func connectCasdoorAdmin(ctx context.Context, cfg settings, r *repo.Repo,
 	holder *atomic.Pointer[casdoor.AdminClient], logger *slog.Logger) {
 	retryUntilOK(ctx, time.Second, func(ctx context.Context) error {
@@ -41,7 +42,7 @@ func connectCasdoorAdmin(ctx context.Context, cfg settings, r *repo.Repo,
 			return err
 		}
 		holder.Store(c)
-		bootstrap.Run(ctx, c, r, bootstrap.Config{
+		err = bootstrap.Run(ctx, c, r, bootstrap.Config{
 			OrgName: cfg.casdoorOrgName,
 			AppName: cfg.casdoorAppName,
 			// 前端登录回调地址属于前端的部署，不在这里写死；应用已存在时不改它。
@@ -50,10 +51,18 @@ func connectCasdoorAdmin(ctx context.Context, cfg settings, r *repo.Repo,
 			WebhookCallbackURL:     cfg.webhookCallbackURL,
 			WebhookSharedHeader:    webhookSharedSecretHeader,
 			WebhookSharedSecretVal: cfg.webhookSharedSecret,
-		}, logger)
-		return nil
+		})
+		switch {
+		case err == nil || ctx.Err() != nil:
+			return nil
+		case casdoor.IsUnreachable(err):
+			return err // 整轮重来；onFail 记 Warn
+		default:
+			logger.Error("启动对账失败，需要人处理（不再重试；新用户登录或用户事件投递可能受影响）", "error", err)
+			return nil
+		}
 	}, func(err error, next time.Duration) {
-		logCasdoorFailure(logger, "登录 Casdoor 管理 API 失败，稍后重试（在此之前 gRPC BatchGetUsers 回 Unavailable）", err, next)
+		logCasdoorFailure(logger, "连接 Casdoor 管理 API 或启动对账失败，稍后重试（登录成功之前 gRPC BatchGetUsers 回 Unavailable）", err, next)
 	})
 }
 

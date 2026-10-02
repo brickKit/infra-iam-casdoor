@@ -132,3 +132,17 @@ func TestConnectCasdoorAdmin_登录失败在后台重试直到成功且只记War
 		t.Fatalf("Casdoor 暂时不在不该记 Error，实际 %d 条", n)
 	}
 }
+
+// 登录成功之后、对账途中 Casdoor 抖了一下：这一轮对账要整轮重来（每一步都先查
+// 再建，重跑是安全的），否则组织 / 应用 / webhook 停在旧状态直到本组件重启
+// （例如换了 WEBHOOK_CALLBACK_URL 的那次启动，Casdoor 继续往旧地址投）。
+func TestConnectCasdoorAdmin_对账途中Casdoor不可达时整轮重试且只记Warn(t *testing.T) {
+	f := &flakyCasdoor{orgFails: 1}
+	_, rec := runConnect(t, f)
+	if n := f.orgCalls.Load(); n < 2 {
+		t.Fatalf("对账途中 Casdoor 不可达应整轮重试，get-organization 实际只调了 %d 次", n)
+	}
+	if n := rec.count(slog.LevelError); n != 0 {
+		t.Fatalf("Casdoor 暂时不在不该记 Error，实际 %d 条", n)
+	}
+}

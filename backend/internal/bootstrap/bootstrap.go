@@ -12,8 +12,8 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/repo"
@@ -30,22 +30,24 @@ type Config struct {
 	WebhookSharedSecretVal string
 }
 
-// Run 依次跑三步，单步失败不阻断后续步骤——比如组织建失败（网络抖动）
-// 不该连带跳过 webhook 检查，下一次启动三步都会重新对账一遍。返回值
-// 汇总了失败的步骤，调用方（module.Start）只记日志，不阻断组件启动
-// （这几步失败只影响"新用户能不能登录"，不影响已经拿到应用 token 的
-// 人正常使用别的组件——同 infra-authz 的 EnsureBootstrapAdmin 失败
-// 只记日志的判断）。
-func Run(ctx context.Context, c *casdoor.AdminClient, r *repo.Repo, cfg Config, logger *slog.Logger) {
+// Run 依次跑三步，单步失败不阻断后续步骤——比如组织建失败不该连带跳过 webhook
+// 检查。返回全部失败步骤的汇总（errors.Join，每一条带步骤名）；全部成功返回 nil。
+// 每一步都先查再建，整轮重跑是安全的：调用方据 casdoor.IsUnreachable 决定是稍后
+// 整轮重来（Casdoor 暂时不在）还是记 Error 交给人（被拒绝、写库失败）。这几步失败
+// 只影响"新用户能不能登录、用户事件能不能投进来"，不影响已拿到应用 token 的人，
+// 所以不阻断组件启动。
+func Run(ctx context.Context, c *casdoor.AdminClient, r *repo.Repo, cfg Config) error {
+	var errs []error
 	if err := ensureOrganization(ctx, c, r, cfg.OrgName); err != nil {
-		logger.Error("自举：确保组织存在失败", "org", cfg.OrgName, "error", err)
+		errs = append(errs, fmt.Errorf("确保组织 %q 存在: %w", cfg.OrgName, err))
 	}
 	if err := ensureApplication(ctx, c, r, cfg); err != nil {
-		logger.Error("自举：确保应用存在失败", "app", cfg.AppName, "error", err)
+		errs = append(errs, fmt.Errorf("确保应用 %q 存在: %w", cfg.AppName, err))
 	}
 	if err := ensureWebhook(ctx, c, r, cfg); err != nil {
-		logger.Error("自举：确保 webhook 存在失败", "webhook", cfg.WebhookName, "error", err)
+		errs = append(errs, fmt.Errorf("确保 webhook %q 存在且与配置一致: %w", cfg.WebhookName, err))
 	}
+	return errors.Join(errs...)
 }
 
 func ensureOrganization(ctx context.Context, c *casdoor.AdminClient, r *repo.Repo, orgName string) error {
