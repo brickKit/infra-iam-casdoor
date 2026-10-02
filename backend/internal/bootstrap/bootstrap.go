@@ -85,19 +85,26 @@ func ensureApplication(ctx context.Context, c *casdoor.AdminClient, r *repo.Repo
 
 func ensureWebhook(ctx context.Context, c *casdoor.AdminClient, r *repo.Repo, cfg Config) error {
 	if cfg.WebhookCallbackURL == "" {
-		// 留空是合法状态：没配就跳过，不算失败（同 infra-authz 的
-		// bootstrapAdminSub 为空时跳过），常见于本组件还没配好带外
-		// 网络地址的早期开发阶段。
+		// 留空是合法状态：这个部署不接 Casdoor 的用户事件，跳过、不算失败。
 		return nil
 	}
-	exists, err := c.WebhookExists(ctx, cfg.WebhookName)
+	wh, err := c.GetWebhook(ctx, cfg.WebhookName)
 	if err != nil {
 		return fmt.Errorf("查 webhook 是否存在: %w", err)
 	}
-	if !exists {
+	switch {
+	case wh == nil:
 		if err := c.CreateWebhook(ctx, cfg.WebhookName, cfg.OrgName, cfg.WebhookCallbackURL,
 			cfg.WebhookSharedHeader, cfg.WebhookSharedSecretVal); err != nil {
 			return fmt.Errorf("建 webhook: %w", err)
+		}
+	case wh.URL != cfg.WebhookCallbackURL || !wh.IsEnabled ||
+		wh.HeaderValue(cfg.WebhookSharedHeader) != cfg.WebhookSharedSecretVal:
+		// 换了回调地址或共享密钥：不改写的话 Casdoor 继续往旧地址投、带旧密钥，
+		// 投递要么到不了，要么被本组件 401 拒收。⚠️ 日志里不写密钥。
+		if err := c.UpdateWebhook(ctx, cfg.WebhookName, cfg.OrgName, cfg.WebhookCallbackURL,
+			cfg.WebhookSharedHeader, cfg.WebhookSharedSecretVal); err != nil {
+			return fmt.Errorf("更新 webhook: %w", err)
 		}
 	}
 	return r.MarkBootstrapStepDone(ctx, "casdoor_webhook", nil)

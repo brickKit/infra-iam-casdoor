@@ -271,15 +271,67 @@ func (c *AdminClient) WebhookExists(ctx context.Context, name string) (bool, err
 	return !isJSONNull(data), nil
 }
 
-// CreateWebhook 建一个用户增删改事件的回调，用**自定义 header** 携带
-// 共享密钥——真机核对过 Casdoor 的 Webhook 对象确实支持自定义 header
-// （见 AGENTS.md/实测踩坑记录），这是它没有内置签名机制时唯一能用的
-// 认证方式。callbackURL 由调用方（bootstrap 包）算好传入——Casdoor 是
-// 带外容器，回调地址必须是"从 Casdoor 容器视角能访问到本组件"的地址
-// （桥接网关 IP + 宿主机映射端口，不是 host.docker.internal，两者的
-// 网络方向相反，见 AGENTS.md）。
+// Webhook 是对账要比较的字段子集。
+type Webhook struct {
+	URL       string          `json:"url"`
+	IsEnabled bool            `json:"isEnabled"`
+	Headers   []WebhookHeader `json:"headers"`
+}
+
+// WebhookHeader 是 Casdoor webhook 的自定义 header。
+type WebhookHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// HeaderValue 返回名为 name 的 header 的值，没有时返回空串。
+func (w *Webhook) HeaderValue(name string) string {
+	for _, h := range w.Headers {
+		if h.Name == name {
+			return h.Value
+		}
+	}
+	return ""
+}
+
+// GetWebhook 查一个 webhook；不存在时返回 (nil, nil)。⚠️ 返回值里有共享密钥
+// header 的明文，只用来比对，不许打进日志。
+func (c *AdminClient) GetWebhook(ctx context.Context, name string) (*Webhook, error) {
+	data, err := c.get(ctx, "/api/get-webhook", url.Values{"id": {c.username + "/" + name}})
+	if err != nil {
+		return nil, err
+	}
+	if isJSONNull(data) {
+		return nil, nil
+	}
+	var w Webhook
+	if err := json.Unmarshal(data, &w); err != nil {
+		return nil, fmt.Errorf("解析 webhook 失败: %w", err)
+	}
+	return &w, nil
+}
+
+// CreateWebhook 建一个用户增删改事件的回调，用**自定义 header** 携带共享
+// 密钥——Casdoor 的 webhook 没有内置签名，自定义 header 是唯一能用的认证方式。
+// callbackURL 由调用方（bootstrap 包）传入：Casdoor 不在本组件所在的 Docker
+// 网络里，回调地址必须是"从 Casdoor 那一侧能访问到本组件对外暴露的端口"的地址
+// （部署条目 expose: true，Casdoor 经宿主机访问），不能自动推导。
 func (c *AdminClient) CreateWebhook(ctx context.Context, name, organization, callbackURL, sharedSecretHeaderName, sharedSecretValue string) error {
-	_, err := c.post(ctx, "/api/add-webhook", map[string]any{
+	_, err := c.post(ctx, "/api/add-webhook",
+		c.webhookBody(name, organization, callbackURL, sharedSecretHeaderName, sharedSecretValue))
+	return err
+}
+
+// UpdateWebhook 把已有 webhook 整个改写成当前配置（回调地址、共享密钥 header、
+// 启用状态、事件集合）。Casdoor 的 update 接口按 id 定位、用请求体整体覆盖。
+func (c *AdminClient) UpdateWebhook(ctx context.Context, name, organization, callbackURL, sharedSecretHeaderName, sharedSecretValue string) error {
+	_, err := c.post(ctx, "/api/update-webhook?id="+url.QueryEscape(c.username+"/"+name),
+		c.webhookBody(name, organization, callbackURL, sharedSecretHeaderName, sharedSecretValue))
+	return err
+}
+
+func (c *AdminClient) webhookBody(name, organization, callbackURL, sharedSecretHeaderName, sharedSecretValue string) map[string]any {
+	return map[string]any{
 		"owner":          c.username,
 		"name":           name,
 		"organization":   organization,
@@ -293,8 +345,7 @@ func (c *AdminClient) CreateWebhook(ctx context.Context, name, organization, cal
 		"headers": []map[string]string{
 			{"name": sharedSecretHeaderName, "value": sharedSecretValue},
 		},
-	})
-	return err
+	}
 }
 
 // DeleteWebhook 同 DeleteApplication/DeleteOrganization：生产代码不用，

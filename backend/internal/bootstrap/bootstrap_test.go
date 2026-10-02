@@ -157,3 +157,50 @@ func TestRun_webhookCallbackURL为空时跳过webhook步骤(t *testing.T) {
 		t.Fatalf("webhookCallbackUrl 为空时 casdoor_webhook 不该被标记完成：%+v, err=%v", step, err)
 	}
 }
+
+// TestRun_回调地址或共享密钥变了再跑一遍会更新webhook：每次启动的对账不只看
+// "webhook 在不在"，还要让它的回调地址、共享密钥 header、启用状态等于当前配置。
+// 只看在不在时，换了 WEBHOOK_CALLBACK_URL 或 WEBHOOK_SHARED_SECRET 之后 Casdoor
+// 仍按旧地址 / 旧密钥投递：前者投不到，后者每次都被本组件以 401 拒收，用户事件
+// 全部丢失，两边日志都看不出原因。
+func TestRun_回调地址或共享密钥变了再跑一遍会更新webhook(t *testing.T) {
+	db := testDB(t)
+	r := repo.New(db, "infra_iam_casdoor_rw", "infra_iam_casdoor")
+	c := testAdminClient(t)
+	ctx := context.Background()
+
+	orgName := uniqueID("bootstraptest-org")
+	appName := uniqueID("bootstraptest-app")
+	whName := uniqueID("bootstraptest-wh")
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		_ = c.DeleteWebhook(cleanupCtx, whName, orgName)
+		_ = c.DeleteApplication(cleanupCtx, appName, orgName)
+		_ = c.DeleteOrganization(cleanupCtx, orgName)
+	})
+
+	cfg := Config{
+		OrgName: orgName, AppName: appName, AppRedirectURIs: []string{},
+		WebhookName: whName, WebhookCallbackURL: "http://old-host.test:8200/api/iam/webhooks/casdoor",
+		WebhookSharedHeader: "X-Shared-Secret", WebhookSharedSecretVal: "old-secret",
+	}
+	Run(ctx, c, r, cfg, testLogger())
+
+	cfg.WebhookCallbackURL = "http://new-host.test:8200/api/iam/webhooks/casdoor"
+	cfg.WebhookSharedSecretVal = "new-secret"
+	Run(ctx, c, r, cfg, testLogger())
+
+	wh, err := c.GetWebhook(ctx, whName)
+	if err != nil || wh == nil {
+		t.Fatalf("webhook 应该存在：%+v, err=%v", wh, err)
+	}
+	if wh.URL != cfg.WebhookCallbackURL {
+		t.Fatalf("回调地址应该更新成 %q，实际 %q", cfg.WebhookCallbackURL, wh.URL)
+	}
+	if got := wh.HeaderValue("X-Shared-Secret"); got != "new-secret" {
+		t.Fatalf("共享密钥 header 应该更新成新值（实际长度 %d）", len(got))
+	}
+	if !wh.IsEnabled {
+		t.Fatal("webhook 应该是启用状态")
+	}
+}
