@@ -35,6 +35,8 @@ Terminal states: a refresh token that is revoked or expired; a webhook delivery 
 
 `payload` is `TEXT`, not JSONB: JSONB validates on insert, so a delivery that is not valid JSON would fail the insert and be lost, while the point is to keep what Casdoor sent for diagnosis.
 
+**Database identity comes from configuration.** All of it lives in one schema, `PG_SCHEMA`, and runs as one role, `PG_USER`: the migrations run as that role, every transaction switches to it (`SET LOCAL ROLE`, also inside a shell, which logs in as itself), and the advisory-lock namespaces are built from `current_schema()`. The role is never derived from the schema name, and the migrations name neither. Until 2.0.0, migrations 001 and 002 contained `ALTER TABLE … OWNER TO infra_iam_casdoor_rw`. They were written for migrations run with an administrator login, where the partition loop, running as the component's role, could not create partitions of tables it did not own. Migrations run as the component's role, which already owns what it creates, so those statements did nothing here and failed for any other role name; they were deleted (an edit with no effect on databases already migrated: table owners are unchanged). A deployment that runs migrations as some other login must hand ownership over itself.
+
 ## Contract surface
 
 gRPC `infra.iam.v1.IamService`, the IAM family's contract (the package name carries no implementation, so an `infra/iam-keycloak` can implement the same proto and callers keep their imports):
@@ -136,7 +138,7 @@ One outgoing edge, `infra/iam-casdoor → infra/authz`, and authz has none, so e
 | `refresh_tokens` | not expired, not revoked | 30 days after expiry or revocation, delete | not archived |
 | `signing_keys` | current and previous | older entries after 90 days, delete | not archived |
 | `bootstrap_state` | always | never | — |
-| `webhook_deliveries` | last 30 days | whole monthly partitions older than 30 days with no `RECEIVED` row left | `infra_iam_casdoor_archive` |
+| `webhook_deliveries` | last 30 days | whole monthly partitions older than 30 days with no `RECEIVED` row left | `<PG_SCHEMA>_archive` |
 | `event_outbox`, `event_inbox` | published within 30 days | older | removed |
 
 The component creates future partitions itself, at start and every 24 hours: weekly ones for the outbox and inbox four weeks ahead, monthly ones for `webhook_deliveries` three months ahead. A write into a period with no partition fails, so this loop is what keeps events and webhooks flowing. `refresh_tokens` is never partitioned: it is small and every refresh looks a row up by `jti`. The deletions and the archiving in the table are not implemented yet (see Open questions).

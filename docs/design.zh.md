@@ -35,6 +35,8 @@
 
 `payload` 是 `TEXT` 不是 JSONB：JSONB 在写入时校验，一条不合法的 JSON 投递会让 insert 失败、投递丢失，而这一列的用途正是保留 Casdoor 发来的原文供排查。
 
+**数据库身份来自配置。** 全部数据在一个 schema（`PG_SCHEMA`）里、以一个角色（`PG_USER`）运行：迁移以这个角色跑，每个事务都切到它（`SET LOCAL ROLE`，进外壳后外壳以自己的角色登录也一样），advisory 锁的命名空间由 `current_schema()` 拼出。角色名从不由 schema 名推出，迁移里也不写这两个名字。2.0.0 之前，迁移 001、002 里有 `ALTER TABLE … OWNER TO infra_iam_casdoor_rw`：它是为"迁移用管理员账号跑"写的，那种情况下以组件角色运行的分区循环给不属于它的表建不了分区。迁移以组件自己的角色运行，建出来的东西本来就归它，这几条在这里什么都不做，换一个角色名却会让迁移失败，所以删掉了（对已经迁移过的库没有任何效果：表的 owner 不变）。如果某个部署要用别的账号跑迁移，所有权要由它自己转过去。
+
 ## 契约面
 
 gRPC `infra.iam.v1.IamService`，IAM 族的契约（包名不带实现名，`infra/iam-keycloak` 能实现同一份 proto，调用方的 import 不变）：
@@ -136,7 +138,7 @@ Casdoor 的 webhook 投递按请求体哈希去重（Casdoor 有没有稳定的�
 | `refresh_tokens` | 未过期、未作废 | 过期或作废满 30 天后删除 | 不归档 |
 | `signing_keys` | 当前与上一把 | 更早的条目满 90 天后删除 | 不归档 |
 | `bootstrap_state` | 一直 | 从不 | — |
-| `webhook_deliveries` | 最近 30 天 | 超过 30 天、且已经没有 `RECEIVED` 行的整月分区 | `infra_iam_casdoor_archive` |
+| `webhook_deliveries` | 最近 30 天 | 超过 30 天、且已经没有 `RECEIVED` 行的整月分区 | `<PG_SCHEMA>_archive` |
 | `event_outbox`、`event_inbox` | 发布后 30 天内 | 更早的 | 删除 |
 
 组件自己建未来的分区，启动时一次、之后每 24 小时一次：outbox 与 inbox 提前四周建周分区，`webhook_deliveries` 提前三个月建月分区。写入落到没有分区的时间段会直接失败，所以事件与 webhook 能不能流动，靠的就是这个循环。`refresh_tokens` 永不分区：它很小，而每次刷新都按 `jti` 查一行。表里的删除与归档尚未实现（见"未决问题"）。

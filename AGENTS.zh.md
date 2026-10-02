@@ -9,7 +9,7 @@
 | 路径 | 负责 |
 |---|---|
 | `backend/module/module.go` | 唯一入口 `New(ctx, rt)`：装配 repo → service → HTTP + gRPC；`Start` 登记 key ID，在后台起 Casdoor 连接与 OIDC 发现，再跑 outbox 推送、消费者、分区循环与 webhook 投递队列。单跑与进外壳是同一个函数 |
-| `backend/module/settings.go` | `loadSettings`：一次读完并解析全部配置键（缺键、TTL 不对、PEM 不对 → 点名配置键的 error，绝不 panic） |
+| `backend/module/settings.go` | `loadSettings`：一次读完并解析全部配置键（缺键、TTL 不对、PEM 不对 → 点名配置键的 error，绝不 panic）；事务角色就是 `PG_USER`，从不由 `PG_SCHEMA` 推出 |
 | `backend/module/casdoor.go` | 两个等 Casdoor 的后台循环：管理 API 登录 + 启动对账、OIDC 发现（`rebaseHost`） |
 | `backend/module/retry.go` | `retryUntilOK`：指数退避、封顶 30 秒，取消不算失败 |
 | `backend/cmd/server/main.go` | 一行 `besdk.RunStandalone(module.New)` |
@@ -60,7 +60,7 @@ make check-version dag-check contract-check import-scan module-check   # 每个�
 make docs-check              # "0 with errors, 0 warnings"
 ```
 
-Casdoor 测试在共享的 Casdoor 里用带时间戳的名字建组织、应用、用户与 webhook，结束后删掉。`buf generate` 之后（契约变了）契约包要打新 tag：见易错点。真机：在项目根目录 `make verify ID=infra/iam-casdoor ROUTE='POST /api/iam/logout' FOCUS=1` 构建镜像、只起本组件需要的部分、核对迁移、健康与受保护路由、跑一次 focus，然后收尾。
+Casdoor 测试在共享的 Casdoor 里用带时间戳的名字建组织、应用、用户与 webhook，结束后删掉。`TestDBIdentity_非默认schema与不按schema起名的登录角色_迁移并经模块读写` 在 `brickkit_test_db` 里建一个临时 schema 与登录角色、迁移进去，结束后两者都删掉，所以 `TEST_PG_DSN` 必须以能建角色的身份登录（上面的 `postgres`）。`buf generate` 之后（契约变了）契约包要打新 tag：见易错点。真机：在项目根目录 `make verify ID=infra/iam-casdoor ROUTE='POST /api/iam/logout' FOCUS=1` 构建镜像、只起本组件需要的部分、核对迁移、健康与受保护路由、跑一次 focus，然后收尾。
 
 ## 设计取舍
 
@@ -94,6 +94,7 @@ Casdoor 测试在共享的 Casdoor 里用带时间戳的名字建组织、应用
 | 给 `bootstrap` 建的应用加上 `password` 授权 | 能用，但登录用的应用从此接受任何人发来的密码 | 浏览器走授权码流程；只有 `casdoor_integration_test.go` 与 `scripts/seed.sh` 里的测试应用开密码授权 |
 | refresh token 与应用 token 用同样的 claims、不检查 `typ` | 应用 token 被当成 refresh token 接受，或者反过来 | 两者用同一把钥匙签；`TestVerifyRefreshToken_不接受应用token冒充` |
 | 启动时生成签名密钥，或让各副本用不同的钥匙 | 每次重启所有人被登出；两个副本时一半请求验不过 | 钥匙来自 `APP_TOKEN_SIGNING_KEY_PEM`；key ID 是确定性的 RFC 7638 指纹 |
+| 由 schema 名推角色（`<schema>_rw`），或在迁移、查询里写死角色名、schema 名 | 本项目里名字恰好对得上，全绿；换一套名字部署时迁移失败（`must be able to SET ROLE`），或每次写库 `500`（`role … does not exist`） | 角色是 `PG_USER`、schema 是 `PG_SCHEMA`；迁移只用不带限定的名字，advisory 锁用 `current_schema()`；`TestDBIdentity_非默认schema与不按schema起名的登录角色_迁移并经模块读写` |
 | 改了 `contracts/infra/iam/v1/iam.proto` 的注释或选项却不给契约包打 tag | 本地构建通过（`replace` 遮住了）；外壳拉取 `infra-iam-casdoor/v2` 时对着旧的 `gen/` 编译 | `gen/infra/iam/` 下任何变化都要打新 tag gen/infra/iam/v1.x.y，并让根 `go.mod` require 它 |
 
 ## 改代码前自查

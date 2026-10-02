@@ -21,7 +21,7 @@ Casdoor 与项目其余部分之间的适配层。Casdoor 证明"这个人是谁
 
 ## 部署前准备
 
-- **PostgreSQL**：schema `infra_iam_casdoor`（按 schema 惯例还会有 `infra_iam_casdoor_archive`，目前没有任何东西写它）、登录角色 `infra_iam_casdoor_rw`（在该 schema 上有 `USAGE` 与 `CREATE`）及其密码。迁移以这个角色运行并建表，所以表归它所有；组件运行时自己建未来的分区，需要这份所有权。BrickKit 不建这些；在 BrickEnterprise 组装项目里，`make dev-env` 把密码写进 `.env`，`make db-init` 建 schema、角色与授权。
+- **PostgreSQL**：一个 schema 与一个登录角色，名字由你定。`PG_SCHEMA` 是 schema 名（默认 `infra_iam_casdoor`）；`PG_USER` 是角色名，它要在该 schema 上有 `USAGE` 与 `CREATE`，`PG_PASSWORD` 是它的密码。迁移以这个角色运行，里面不写任何角色名或 schema 名：所有对象都不带限定名建在 `PG_SCHEMA` 里，所以归这个角色所有；组件运行时自己建未来的分区，需要这份所有权。角色名从不由 schema 名推出。`<PG_SCHEMA>_archive` schema 可有可无，目前没有任何东西写它。BrickKit 不建这些。BrickEnterprise 组装项目是提供它们的一种方式：`make dev-env` 把密码写进 `.env`，`make db-init` 按它的登记表建 schema `infra_iam_casdoor`、角色 `infra_iam_casdoor_rw` 与授权。
 - **NATS** 可经 `NATS_URL` 访问：事件经 outbox 表与后台推送发出；NATS 不在时组件照样启动，事件在 outbox 里等。
 - **Casdoor** 在跑，本组件能经 `CASDOOR_BASE_URL` 访问到它，Casdoor 内置组织里有一个管理员账号（`CASDOOR_ADMIN_USERNAME` / `CASDOOR_ADMIN_PASSWORD`）。Casdoor 镜像自带一个人人皆知的默认管理员口令：生产环境必须把 Casdoor 管理员的口令与 `CASDOOR_ADMIN_PASSWORD` 一起改掉（两边对不上时，管理 API 登录在后台反复重试，每次都记一条 Error，最多每 30 秒一次，直到口令改对；在此之前组织、应用、webhook 都不对账，`BatchGetUsers` 回 `UNAVAILABLE`，webhook 投递在队列里等，登录成功后发出；之前某次启动记下过应用 client ID 的话换 token 照常，全新安装时回 `503`）。Casdoor 的 `origin` 配置必须是带端口的完整 URL：它的 OIDC 发现文档里的 issuer 与 JWKS 地址都由它拼出。组织 `CASDOOR_ORG_NAME`、应用 `CASDOOR_APP_NAME` 与 webhook 由本组件自己建；Casdoor 还没起来时本组件在后台反复重试，在第一次连上 Casdoor 之前换 token 回 `503`。
 - **签名密钥**：一把 PEM 格式的 RSA 私钥（PKCS #1 或 PKCS #8），例如 `openssl genrsa 2048`。重启前后、各副本之间必须是同一把，否则重启前签出的 token 全部验不过。作为密钥文件保存，用 `file://` 引用。
@@ -42,10 +42,10 @@ Casdoor 本身不是依赖：它是项目之外的资源，经 `CASDOOR_BASE_URL
 |---|---|
 | `PG_HOST` | PostgreSQL 主机。一般写项目共享值（`$var:PG_HOST`）。 |
 | `PG_PORT` | PostgreSQL 端口；默认 `5432`。 |
-| `PG_DATABASE` | `infra_iam_casdoor` schema 所在的库（`$var:PG_DATABASE`）。 |
-| `PG_USER` | 登录角色，写字面量 `infra_iam_casdoor_rw`。在外壳里，外壳以自己的角色登录、每个事务切到这个角色（`SET LOCAL ROLE`），所以角色名必须是 `<PG_SCHEMA>_rw`。 |
+| `PG_DATABASE` | `PG_SCHEMA` 那个 schema 所在的库（`$var:PG_DATABASE`）。 |
+| `PG_USER` | 组件的角色，名字随意（BrickEnterprise 项目里是 `infra_iam_casdoor_rw`）。单跑时组件以它登录。每个事务都切到它（`SET LOCAL ROLE`），所以在外壳里（外壳以自己的角色登录）这个成员的 `PG_USER` 仍是它的事务所用的角色，外壳的角色必须能切到它。 |
 | `PG_PASSWORD` | `PG_USER` 的密码。密钥：写 `${INFRA_IAM_CASDOOR_DB_PASSWORD}`（或你的密钥库引用），不写值本身。 |
-| `PG_SCHEMA` | 全部表、outbox 与迁移状态表（`schema_migrations_infra_iam_casdoor`）所在的 schema；默认 `infra_iam_casdoor`。照样写出字面量。 |
+| `PG_SCHEMA` | 全部表、outbox 与迁移状态表（`schema_migrations_<PG_SCHEMA>`）所在的 schema；默认 `infra_iam_casdoor`。任何合法的名字都行；照样写出字面量。 |
 | `NATS_URL` | outbox 推送发往、消费者读取的 NATS（`$var:NATS_URL`）。 |
 | `OTEL_BASE_URL` | OpenTelemetry collector 的基地址；为空（默认）不导出。 |
 | `IAM_JWKS_URL` | 本组件自己的 JWKS，例如 `http://infra-iam-casdoor-2-0-0:8200/.well-known/jwks.json`：SDK 像在其余组件里一样验 `POST /api/iam/logout` 的 token。必填；为空或不可达时登出回 `403`。与其余组件用同一个项目级取值。 |

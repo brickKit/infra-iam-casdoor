@@ -9,7 +9,7 @@ The AI guide to developing this component. How to use it, its boundaries and con
 | Path | Owns |
 |---|---|
 | `backend/module/module.go` | The only entry, `New(ctx, rt)`: builds repo → service → HTTP + gRPC; `Start` registers the key IDs, starts the Casdoor connection and the OIDC discovery in the background, then runs the outbox pump, the consumer, the partition loop and the webhook delivery queue. Same function standalone and in a shell |
-| `backend/module/settings.go` | `loadSettings`: reads and parses every config key once (missing keys, bad TTLs, bad PEMs → an error naming the key, never a panic) |
+| `backend/module/settings.go` | `loadSettings`: reads and parses every config key once (missing keys, bad TTLs, bad PEMs → an error naming the key, never a panic); the transaction role is `PG_USER`, never derived from `PG_SCHEMA` |
 | `backend/module/casdoor.go` | The two background loops that wait for Casdoor: admin login + start-up reconciliation, OIDC discovery (`rebaseHost`) |
 | `backend/module/retry.go` | `retryUntilOK`: exponential backoff up to 30 s, a cancel is not a failure |
 | `backend/cmd/server/main.go` | One line, `besdk.RunStandalone(module.New)` |
@@ -60,7 +60,7 @@ make check-version dag-check contract-check import-scan module-check   # each pr
 make docs-check              # "0 with errors, 0 warnings"
 ```
 
-The Casdoor tests create organisations, applications, users and webhooks with timestamped names in the shared Casdoor and delete them afterwards. After `buf generate` (contracts changed) the contract package needs a new tag: see Pitfalls. On a real machine, from the project root: `make verify ID=infra/iam-casdoor ROUTE='POST /api/iam/logout' FOCUS=1` builds the image, starts only what this component needs, checks migration, health and the protected route, runs a focus run, and tears down.
+The Casdoor tests create organisations, applications, users and webhooks with timestamped names in the shared Casdoor and delete them afterwards. `TestDBIdentity_非默认schema与不按schema起名的登录角色_迁移并经模块读写` creates a throwaway schema and login role in `brickkit_test_db`, migrates into it and drops both afterwards, so `TEST_PG_DSN` must log in as a role that may create roles (`postgres` above). After `buf generate` (contracts changed) the contract package needs a new tag: see Pitfalls. On a real machine, from the project root: `make verify ID=infra/iam-casdoor ROUTE='POST /api/iam/logout' FOCUS=1` builds the image, starts only what this component needs, checks migration, health and the protected route, runs a focus run, and tears down.
 
 ## Design decisions
 
@@ -94,6 +94,7 @@ The Casdoor tests create organisations, applications, users and webhooks with ti
 | Add the `password` grant to the application `bootstrap` creates | Works, and turns the login application into one that accepts passwords sent by anyone | Browsers use the authorization code flow; only the test application in `casdoor_integration_test.go` and `scripts/seed.sh` has the password grant |
 | Give refresh tokens and application tokens the same claims without the `typ` check | An application token is accepted as a refresh token, or the other way round | Both are signed with the same key; `TestVerifyRefreshToken_不接受应用token冒充` |
 | Generate the signing key at start, or let replicas use different keys | Every restart logs every user out; on two replicas, half of the requests fail verification | The key comes from `APP_TOKEN_SIGNING_KEY_PEM`; its key ID is the deterministic RFC 7638 thumbprint |
+| Derive the role from the schema name (`<schema>_rw`), or write a role or schema name into a migration or a query | Green in this project, where the names happen to match; a deployment with other names fails to migrate (`must be able to SET ROLE`) or answers `500` on every write (`role … does not exist`) | The role is `PG_USER`, the schema `PG_SCHEMA`; migrations use unqualified names, advisory locks use `current_schema()`; `TestDBIdentity_非默认schema与不按schema起名的登录角色_迁移并经模块读写` |
 | Change a comment or option in `contracts/infra/iam/v1/iam.proto` without tagging the contract package | Builds pass locally (the `replace` hides it); a shell fetching `infra-iam-casdoor/v2` compiles against the old `gen/` | Any change under `gen/infra/iam/` needs a new tag gen/infra/iam/v1.x.y and the root `go.mod` requiring it |
 
 ## Before changing code
