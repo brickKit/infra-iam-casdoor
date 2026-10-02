@@ -209,41 +209,93 @@ func (s *Service) signAccessTokenFor(ctx context.Context, sub string) (accessTok
 
 // ── Webhook ──────────────────────────────────────────────────────────
 
-// HandleWebhookDelivery 登记一次投递（去重）并宽容解析 payload——校验
-// 共享密钥这一步已经在 http 层做完（那一步是"是不是 Casdoor 发的"，
-// 严格；这一步是"这条事件长什么样"，宽容：Casdoor 的投递保证与 payload
-// 形状至今没有完全核实，见 docs/design.md 的未决问题）。
+// HandleWebhookDelivery 登记一次投递（去重）并按 R61 发用户事件——校验共享密钥这一步
+// 已经在 http 层做完（"是不是 Casdoor 发的"，严格）；这里是"这条投递说的是谁"，宽容：
+// 解析不了、认不出动作、认不出是谁，都登记成 IGNORED / ERROR 并回 200。
 //
-// dedupKey 由调用方（http 层）算好传入——算法本身（有没有稳定投递 ID、
-// 退化到内容哈希）是协议细节，不属于这一层的编排逻辑。action 从
-// payload 自己解析出来，不要求调用方提前知道 Casdoor 的字段名。
+// ⚠️ 事件内容不取自投递体，而是回 Casdoor 读这个人的当前状态（docs/design.md"用户事件
+// 怎么发"）。Casdoor 把同一秒里的两次修改按新到旧投递过，照投递体发、按处理时刻定版本号，
+// 下游就留下旧值；回读之后每条事件都是"处理那一刻的最新状态"，到达顺序不再要紧。
+// 同一个人的投递按人串行（版本号那一行的行锁，见 repo.NextUserEventVersionTx），后回读的
+// 一定拿到更大的版本号。
 //
-// ⚠️ 解析（这个函数）与登记+发布（RecordDeliveryAndPublish）分成两段：
-// 解析不需要数据库，先做完再决定 status/errMsg 与要不要发事件；登记
-// 与发布必须在同一个事务里（Outbox Pattern），交给
-// repo 层的 RecordDeliveryAndPublish 一次做完。
+// 整个处理都在登记投递的那个事务里（repo.RecordDelivery）：重投直接跳过、不回读；
+// Casdoor 读不回来（管理会话没就绪、Casdoor 出错）时回 ErrUnavailable（HTTP 503），
+// 事务回滚、投递不登记——登记了就会被当成重投去重掉。
 func (s *Service) HandleWebhookDelivery(ctx context.Context, dedupKey string, rawPayload []byte) error {
 	var payload webhookUserPayload
-	status, errMsg := "PROCESSED", ""
-	var publish func(tx *sql.Tx) error
+	parseErr := json.Unmarshal(rawPayload, &payload)
+	_, err := s.repo.RecordDelivery(ctx, dedupKey, payload.Action, rawPayload, func(tx *sql.Tx) (string, string, error) {
+		if parseErr != nil {
+			return "ERROR", "解析 payload 失败: " + parseErr.Error(), nil
+		}
+		kind, ok := kindOf(payload.Action)
+		if !ok {
+			return "IGNORED", "无法从 action 推出事件类型: " + payload.Action, nil
+		}
+		ref := payload.userRef()
+		if ref.ID == "" && !ref.hasName() {
+			return "IGNORED", "payload 里找不到用户标识", nil
+		}
+		var users UserReader
+		if s.users != nil {
+			users = s.users()
+		}
+		if users == nil {
+			return "", "", fmt.Errorf("%w: Casdoor 管理会话尚未就绪，读不回用户的当前状态", ErrUnavailable)
+		}
+		sub, err := s.resolveSub(ctx, tx, users, ref)
+		if err != nil {
+			return "", "", err
+		}
+		if sub == "" {
+			return "IGNORED", "投递里只有 owner/name，Casdoor 里查不到这个人，本组件也没见过这个名字", nil
+		}
+		return s.publishCurrentState(ctx, tx, users, kind, sub)
+	})
+	return err
+}
 
-	if err := json.Unmarshal(rawPayload, &payload); err != nil {
-		status, errMsg = "ERROR", "解析 payload 失败: "+err.Error()
-	} else if payload.Sub() == "" {
-		status, errMsg = "IGNORED", "payload 里找不到用户标识"
-	} else if subject, ok := payload.EventSubject(payload.Action); !ok {
-		status, errMsg = "IGNORED", "无法从 action 推出事件类型: "+payload.Action
-	} else {
-		ev, buildErr := buildUserEvent(subject, payload)
-		if buildErr != nil {
-			status, errMsg = "ERROR", buildErr.Error()
-		} else {
-			publish = func(tx *sql.Tx) error { return besdk.PublishOutbox(tx, s.schema, ev) }
+// resolveSub 给出投递里那个人的 sub：有 id 就是 id；只有 owner/name 时先问 Casdoor，
+// 查不到（人已删除）再查本组件见过的名字。都没有返回 ""。
+func (s *Service) resolveSub(ctx context.Context, tx *sql.Tx, users UserReader, ref userRef) (string, error) {
+	if ref.ID != "" {
+		return ref.ID, nil
+	}
+	u, err := users.GetUserByName(ctx, ref.Owner, ref.Name)
+	if err != nil {
+		return "", fmt.Errorf("%w: 按 owner/name 回读 Casdoor 用户失败: %s", ErrUnavailable, err.Error())
+	}
+	if u != nil && u.ID != "" {
+		return u.ID, nil
+	}
+	return s.repo.SubByNameTx(ctx, tx, ref.Owner, ref.Name)
+}
+
+// publishCurrentState 先锁住这个人的版本号那一行、取下一个版本号，再回读当前状态、写 outbox。
+// 顺序不能反：先回读后加锁，两次并发投递就可能"先读到旧值的那次后定版本号"。
+func (s *Service) publishCurrentState(ctx context.Context, tx *sql.Tx, users UserReader, kind actionKind, sub string) (string, string, error) {
+	version, err := s.repo.NextUserEventVersionTx(ctx, tx, sub, time.Now().UnixNano())
+	if err != nil {
+		return "", "", err
+	}
+	u, err := users.GetUserBySub(ctx, sub)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: 回读 Casdoor 用户失败: %s", ErrUnavailable, err.Error())
+	}
+	if u != nil && u.Owner != "" && u.Name != "" {
+		if err := s.repo.RememberUserNameTx(ctx, tx, sub, u.Owner, u.Name); err != nil {
+			return "", "", err
 		}
 	}
-
-	_, err := s.repo.RecordDeliveryAndPublish(ctx, dedupKey, payload.Action, rawPayload, status, errMsg, publish)
-	return err
+	ev, err := userEventFor(kind, sub, u, version)
+	if err != nil {
+		return "", "", err
+	}
+	if err := besdk.PublishOutbox(tx, s.schema, ev); err != nil {
+		return "", "", err
+	}
+	return "PROCESSED", "", nil
 }
 
 // ── 密钥元数据（启动时登记，供 ListSigningKeys 排查用）──────────────

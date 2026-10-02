@@ -2,120 +2,148 @@ package service
 
 import (
 	"encoding/json"
-	"time"
 
 	besdk "github.com/brickKit/be-sdk-go"
+
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 )
 
 // webhookUserPayload 解析 Casdoor 的 webhook 投递体。
 //
-// 投递体就是 Casdoor 的 Record 对象（2026-10-02 真机抓到过 login 与 update-user 两种）：
-// action 是动作名；object 是**被 JSON 编码成字符串**的请求体——调用方发了整个用户对象的
-// update-user 时就是那个对象（口令已由 Casdoor 掩码成 "***"），login 时是登录表单，只发
-// owner 与 name 的 add-user / delete-user 时也没有用户 id（这几种都标 IGNORED）；
-// user 是发起操作的账号名（管理员改别人时是 "admin"，不是被改的人）；extendedUser 在
-// isUserExtended=false 时为 null。所以用户字段从 object 里取，字符串与对象两种写法都认。
-// 投递 ID 是否稳定仍未核实，去重键用内容哈希（见 http 包的 dedupKeyFor）。
+// 投递体就是 Casdoor 的 Record 对象（2026-10-02 真机抓到过 login、update-user、add-user、
+// delete-user）：action 是动作名；object 是**被 JSON 编码成字符串**的请求体——管理界面
+// 改人时是整个用户对象（口令已由 Casdoor 掩码成 "***"），login 时是登录表单，用最小请求体
+// 调管理 API 的 add-user / delete-user 只有 owner 与 name、没有 id；user 是发起操作的账号名
+// （管理员改别人时是 "admin"，不是被改的人）；extendedUser 在 isUserExtended=false 时为 null。
+//
+// ⚠️ 投递体只用来认出"是谁"，事件内容一律回 Casdoor 读这个人的当前状态（R61，见
+// service.go 的 HandleWebhookDelivery）：Casdoor 会把同一秒里的两次修改按新到旧投递，
+// 照投递体发事件，下游就留下旧值。
 type webhookUserPayload struct {
 	Action       string          `json:"action"`
-	Name         string          `json:"name"`
-	Owner        string          `json:"owner"`
 	Object       json.RawMessage `json:"object"`
-	User         json.RawMessage `json:"user"`
 	ExtendedUser json.RawMessage `json:"extendedUser"`
 }
 
-// casdoorUserFields 是 Casdoor User 对象里本组件关心的字段——字段名
-// 已经通过真实签发的 token payload 核对过（sub 对应 "id"）。
-type casdoorUserFields struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"displayName"`
-	Email       string `json:"email"`
-	Phone       string `json:"phone"`
+// userRef 是投递里能认出被操作用户的字段：有 id（即 sub）时用 id，否则用 owner/name。
+type userRef struct {
+	ID    string `json:"id"`
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
 }
 
-// Sub 返回投递体里被操作用户的 id（即 token 的 sub）；取不到时返回空字符串——
-// 调用方据此把这条投递标记 IGNORED，而不是发一个 sub 为空的事件出去。
-func (p webhookUserPayload) Sub() string { return p.userFields().ID }
+func (r userRef) hasName() bool { return r.Owner != "" && r.Name != "" }
 
-// userFields 依次尝试 object / user / extendedUser 三个位置，返回第一个能解出
-// 非空 "id" 的用户字段。每个位置既可能是 JSON 对象，也可能是装着 JSON 的字符串
-// （Casdoor 的 object 就是后者）。
-func (p webhookUserPayload) userFields() casdoorUserFields {
-	for _, raw := range [][]byte{p.Object, p.User, p.ExtendedUser} {
-		if f, ok := decodeUser(raw); ok {
-			return f
+// userRef 依次尝试 object / extendedUser 两个位置，先找带 id 的，再找带 owner 与 name 的。
+// 每个位置既可能是 JSON 对象，也可能是装着 JSON 的字符串（Casdoor 的 object 就是后者）。
+// 都没有时返回零值。
+func (p webhookUserPayload) userRef() userRef {
+	var byName userRef
+	for _, raw := range [][]byte{p.Object, p.ExtendedUser} {
+		ref, ok := decodeUserRef(raw)
+		if !ok {
+			continue
+		}
+		if ref.ID != "" {
+			return ref
+		}
+		if !byName.hasName() && ref.hasName() {
+			byName = ref
 		}
 	}
-	return casdoorUserFields{}
+	return byName
 }
 
-// decodeUser 解一个候选位置：字符串先解出里面的 JSON 文本再解一次。
-func decodeUser(raw []byte) (casdoorUserFields, bool) {
-	var f casdoorUserFields
+// decodeUserRef 解一个候选位置：字符串先解出里面的 JSON 文本再解一次。
+func decodeUserRef(raw []byte) (userRef, bool) {
+	var r userRef
 	if len(raw) == 0 {
-		return f, false
+		return r, false
 	}
 	if raw[0] == '"' {
 		var inner string
 		if err := json.Unmarshal(raw, &inner); err != nil {
-			return f, false
+			return r, false
 		}
 		raw = []byte(inner)
 	}
-	if err := json.Unmarshal(raw, &f); err != nil || f.ID == "" {
-		return casdoorUserFields{}, false
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return userRef{}, false
 	}
-	return f, true
+	return r, true
 }
 
-// EventSubject 把 Casdoor 的 action 名映射成本组件的事件 subject
-// （infra.iam.user.created/updated/disabled.v1）。真机见过 update-user 与 login（login 的 object
-// 是登录表单、没有用户 id，在 Sub 那一步就标 IGNORED）；其余几个取自 Casdoor 源码里的动作名。
-// 认不出的 action 返回 ok=false，调用方标 IGNORED 而不是瞎猜发一条。
-func (p webhookUserPayload) EventSubject(action string) (subject string, ok bool) {
+// actionKind 是投递动作的分类。事件 subject 由它与回读到的当前状态一起决定
+// （userEventFor）；认不出的动作（login 等）不回读、不发事件。
+type actionKind int
+
+const (
+	actionCreated actionKind = iota + 1 // add-user、signup
+	actionChanged                       // update-user
+	actionRemoved                       // delete-user、forbid-user
+)
+
+// kindOf 把 Casdoor 的 action 名分类。真机见过 update-user、add-user、delete-user 与
+// login；signup、forbid-user 取自 Casdoor 源码里的动作名。认不出返回 ok=false。
+func kindOf(action string) (actionKind, bool) {
 	switch action {
 	case "add-user", "signup":
-		return "infra.iam.user.created.v1", true
+		return actionCreated, true
 	case "update-user":
-		return "infra.iam.user.updated.v1", true
+		return actionChanged, true
 	case "delete-user", "forbid-user":
-		return "infra.iam.user.disabled.v1", true
+		return actionRemoved, true
 	default:
-		return "", false
+		return 0, false
 	}
 }
 
+const (
+	subjectUserCreated  = "infra.iam.user.created.v1"
+	subjectUserUpdated  = "infra.iam.user.updated.v1"
+	subjectUserDisabled = "infra.iam.user.disabled.v1"
+)
+
 // userEventPayload 是三条 infra.iam.user.*.v1 事件共用的 payload 形状
-// （契约见 contracts/events/iam.events.json）。disabled 事件不带这些
-// 字段（只有 sub），所以下游按 subject 决定要不要读它们。
+// （契约见 contracts/events/iam.events.json）。disabled 事件只有 sub。
 type userEventPayload struct {
-	Sub         string `json:"sub"`
-	DisplayName string `json:"display_name,omitempty"`
-	Email       string `json:"email,omitempty"`
-	Phone       string `json:"phone,omitempty"`
-	Version     int64  `json:"version,omitempty"` // 仅 updated 事件要求（契约 required）
+	Sub         string      `json:"sub"`
+	DisplayName string      `json:"display_name,omitempty"`
+	Email       string      `json:"email,omitempty"`
+	Phone       string      `json:"phone,omitempty"`
+	ImAccounts  []imAccount `json:"im_accounts,omitempty"`
+	Version     int64       `json:"version,omitempty"` // 仅 updated 事件要求（契约 required），与信封 version 相同
 }
 
-// buildUserEvent 组出 besdk.Event。⚠️ version 用签名时刻的 unix 纳秒——
-// 本组件刻意不存用户表，没有一个天然的行版本号可用；纳秒时间戳满足
-// "严格单调递增"这个契约要求（消费者只在严格大于本地值时更新），代价是它
-// 不是一个有业务含义的版本号，但下游（infra-notification）只用它做
-// "谁更新"判断，不需要可读性。
-func buildUserEvent(subject string, p webhookUserPayload) (besdk.Event, error) {
-	fields := p.userFields()
-	sub := p.Sub()
-	version := time.Now().UnixNano() // 信封与 payload 共用同一个值，见函数注释
+type imAccount struct {
+	Channel   string `json:"channel"`
+	AccountID string `json:"account_id"`
+}
 
+// userEventFor 按回读到的当前状态 u 组出事件（u 为 nil 表示 Casdoor 里已经没有这个人）：
+//   - 不在了、已停用（isForbidden）、已软删除（isDeleted）→ disabled。契约规定删除也发
+//     disabled，不另设 deleted；
+//   - 还在、动作是新建 → created；其余（修改，或删除投递到达时人又还在）→ updated，
+//     内容是当前状态。
+//
+// version 由调用方按人取（repo.NextUserEventVersionTx），信封与 updated 的 payload 共用。
+func userEventFor(kind actionKind, sub string, u *casdoor.User, version int64) (besdk.Event, error) {
 	payload := userEventPayload{Sub: sub}
-	switch subject {
-	case "infra.iam.user.disabled.v1":
-		// 契约里这条只要求 sub，其余字段留空。
-	case "infra.iam.user.updated.v1":
-		payload.DisplayName, payload.Email, payload.Phone = fields.DisplayName, fields.Email, fields.Phone
+	var subject string
+	switch {
+	case u == nil || u.IsForbidden || u.IsDeleted:
+		subject = subjectUserDisabled
+	case kind == actionCreated:
+		subject = subjectUserCreated
+	default:
+		subject = subjectUserUpdated
 		payload.Version = version
-	default: // infra.iam.user.created.v1
-		payload.DisplayName, payload.Email, payload.Phone = fields.DisplayName, fields.Email, fields.Phone
+	}
+	if subject != subjectUserDisabled {
+		payload.DisplayName, payload.Email, payload.Phone = u.DisplayName, u.Email, u.Phone
+		if u.Dingtalk != "" { // 与 gRPC BatchGetUsers 的 im_accounts 同一个来源
+			payload.ImAccounts = []imAccount{{Channel: "dingtalk", AccountID: u.Dingtalk}}
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

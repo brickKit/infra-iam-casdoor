@@ -19,7 +19,7 @@
     {
       "subject": "infra.iam.user.created.v1",
       "grade": "core",
-      "note": "Casdoor webhook 报告新用户时发。aggregate_id 是 sub。",
+      "note": "Casdoor webhook 报告新用户时发。aggregate_id 是 sub。字段是处理这次投递时回 Casdoor 读到的当前状态，不是投递体里的值。",
       "payload": {
         "type": "object",
         "required": ["sub"],
@@ -44,7 +44,7 @@
     {
       "subject": "infra.iam.user.updated.v1",
       "grade": "core",
-      "note": "用户属性变更时发，payload 形状同 created + version 单调递增。",
+      "note": "用户属性变更时发，payload 形状同 created + version 单调递增。字段是处理这次投递时回 Casdoor 读到的当前状态，所以投递乱序到达时下游按 version 留下的也是最新值；version 每人单调递增、不小于处理时刻的 unix 纳秒，与信封 version 相同。",
       "payload": {
         "type": "object",
         "required": ["sub", "version"],
@@ -70,7 +70,7 @@
     {
       "subject": "infra.iam.user.disabled.v1",
       "grade": "core",
-      "note": "停用或删除时发。⚠️ 删除也发这条，不发 deleted——下游要的是「别再给他发消息了」，不是「把历史记录删了」。",
+      "note": "停用或删除时发：回读时 Casdoor 里已没有这个人，或已停用（isForbidden）、已软删除（isDeleted）。⚠️ 删除也发这条，不发 deleted——下游要的是「别再给他发消息了」，不是「把历史记录删了」。",
       "payload": {
         "type": "object",
         "required": ["sub"],

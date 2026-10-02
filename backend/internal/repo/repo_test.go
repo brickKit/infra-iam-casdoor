@@ -246,17 +246,17 @@ func assertJSONFieldEquals(t *testing.T, raw []byte, field, want string) {
 	}
 }
 
-func TestRecordDeliveryAndPublish_去重与发布(t *testing.T) {
+func TestRecordDelivery_去重与发布(t *testing.T) {
 	r := testRepo(t)
 	ctx := context.Background()
 	dedupKey := uniqueID("dedup")
 
 	published := false
-	isNew, err := r.RecordDeliveryAndPublish(ctx, dedupKey, "add-user", []byte(`{"a":1}`),
-		"PROCESSED", "", func(tx *sql.Tx) error {
+	isNew, err := r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{"a":1}`),
+		func(tx *sql.Tx) (string, string, error) {
 			published = true
 			_, err := tx.ExecContext(ctx, `SELECT 1`) // 占位写：真实调用方会 PublishOutbox
-			return err
+			return "PROCESSED", "", err
 		})
 	if err != nil {
 		t.Fatalf("第一次登记失败：%v", err)
@@ -269,10 +269,10 @@ func TestRecordDeliveryAndPublish_去重与发布(t *testing.T) {
 	}
 
 	published = false
-	isNew, err = r.RecordDeliveryAndPublish(ctx, dedupKey, "add-user", []byte(`{"a":1}`),
-		"PROCESSED", "", func(tx *sql.Tx) error {
+	isNew, err = r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{"a":1}`),
+		func(tx *sql.Tx) (string, string, error) {
 			published = true
-			return nil
+			return "PROCESSED", "", nil
 		})
 	if err != nil {
 		t.Fatalf("重投不该报错：%v", err)
@@ -285,18 +285,18 @@ func TestRecordDeliveryAndPublish_去重与发布(t *testing.T) {
 	}
 }
 
-// TestRecordDeliveryAndPublish_publish失败整体回滚 用 deliberate break
+// TestRecordDelivery_publish失败整体回滚 用 deliberate break
 // 的方式验证事务原子性：publish 回调失败时，webhook_deliveries 的
 // 那条 INSERT 也必须跟着回滚——否则会出现"记录了投递但事件其实没发出
 // 去、且下次重投会被误判成重复"的悬空状态。
-func TestRecordDeliveryAndPublish_publish失败整体回滚(t *testing.T) {
+func TestRecordDelivery_publish失败整体回滚(t *testing.T) {
 	r := testRepo(t)
 	ctx := context.Background()
 	dedupKey := uniqueID("dedup")
 
-	_, err := r.RecordDeliveryAndPublish(ctx, dedupKey, "add-user", []byte(`{}`),
-		"PROCESSED", "", func(tx *sql.Tx) error {
-			return fmt.Errorf("故意失败")
+	_, err := r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{}`),
+		func(tx *sql.Tx) (string, string, error) {
+			return "", "", fmt.Errorf("故意失败")
 		})
 	if err == nil {
 		t.Fatal("publish 失败应该导致整个调用失败")
@@ -304,8 +304,8 @@ func TestRecordDeliveryAndPublish_publish失败整体回滚(t *testing.T) {
 
 	// 因为回滚了，dedupKey 应该"从未出现过"——用它重新登记一次应该被
 	// 判定为 isNew=true，而不是当成重投跳过。
-	isNew, err := r.RecordDeliveryAndPublish(ctx, dedupKey, "add-user", []byte(`{}`),
-		"PROCESSED", "", nil)
+	isNew, err := r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{}`),
+		func(tx *sql.Tx) (string, string, error) { return "IGNORED", "", nil })
 	if err != nil {
 		t.Fatalf("回滚后重新登记不该报错：%v", err)
 	}
@@ -317,7 +317,7 @@ func TestRecordDeliveryAndPublish_publish失败整体回滚(t *testing.T) {
 // Casdoor 超时重投时，前一次投递可能还没处理完：同一条投递并发到达多次，事件
 // 只能发一次。先查再插的两个事务都会在对方提交之前查到"不存在"，于是都插、都
 // 发——下游（infra-notification 等）收到两条同样的用户事件。
-func TestRecordDeliveryAndPublish_同一投递并发到达只发布一次(t *testing.T) {
+func TestRecordDelivery_同一投递并发到达只发布一次(t *testing.T) {
 	r := testRepo(t)
 	ctx := context.Background()
 	dedupKey := uniqueID("dedup-concurrent")
@@ -329,11 +329,11 @@ func TestRecordDeliveryAndPublish_同一投递并发到达只发布一次(t *tes
 	for i := 0; i < n; i++ {
 		go func() {
 			<-start
-			isNew, err := r.RecordDeliveryAndPublish(ctx, dedupKey, "add-user", []byte(`{"a":1}`),
-				"PROCESSED", "", func(tx *sql.Tx) error {
+			isNew, err := r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{"a":1}`),
+				func(tx *sql.Tx) (string, string, error) {
 					published.Add(1)
 					time.Sleep(100 * time.Millisecond) // 让别的投递在本事务提交前查一次
-					return nil
+					return "PROCESSED", "", nil
 				})
 			if isNew {
 				fresh.Add(1)

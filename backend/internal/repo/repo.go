@@ -1,6 +1,6 @@
 // Package repo 是 infra-iam-casdoor 的数据访问层：refresh_tokens 的
 // 存取/轮换、signing_keys 的元数据登记、webhook_deliveries 的去重、
-// bootstrap_state 的幂等标记。
+// user_event_versions 的每人事件版本号、bootstrap_state 的幂等标记。
 //
 // ⚠️ 没有 users/roles 相关的表——用户主数据在 Casdoor，角色在
 // infra-authz，本组件只存"自己签发过什么"。

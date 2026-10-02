@@ -189,6 +189,18 @@ func TestREST_webhook共享密钥不对回401(t *testing.T) {
 	}
 }
 
+// R61：事件内容回 Casdoor 读，读不回来（管理会话还没就绪）时回 503、不登记，
+// Casdoor 那一侧记一条发送失败。
+func TestREST_webhook读不回Casdoor用户时回503(t *testing.T) {
+	f := newFixture(t, besdk.NewConfig(nil), false) // 没接 UserReader = 管理会话没就绪
+	obj, _ := json.Marshal(map[string]any{"owner": "brickkit", "name": "x", "id": uniqueSub("wh")})
+	body, _ := json.Marshal(map[string]any{"action": "update-user", "object": string(obj)})
+	w := f.do(t, http.MethodPost, "/api/iam/webhooks/casdoor", string(body), map[string]string{"X-Shared-Secret": testSecret})
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("期望 503，实际 %d（%s）", w.Code, w.Body.String())
+	}
+}
+
 func TestREST_webhook共享密钥对时认不出的内容也回200(t *testing.T) {
 	f := newFixture(t, besdk.NewConfig(nil), false)
 	body := fmt.Sprintf(`{"action":"unknown-%s"}`, uniqueSub("wh"))

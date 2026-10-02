@@ -91,17 +91,14 @@ func casdoorRecordPayload(t *testing.T, action, sub, displayName, email string) 
 	return body
 }
 
-func TestWebhookUserPayload_object是JSON字符串时也能取出用户字段(t *testing.T) {
+func TestWebhookUserPayload_object是JSON字符串时也能认出是谁(t *testing.T) {
 	sub := "915d1763-586b-4526-a9d8-589194a624f5"
 	var p webhookUserPayload
 	if err := json.Unmarshal(casdoorRecordPayload(t, "update-user", sub, "财务只读", "f@example.com"), &p); err != nil {
 		t.Fatalf("解析真机形状的投递体失败：%v", err)
 	}
-	if got := p.Sub(); got != sub {
-		t.Fatalf("Sub() = %q，期望从字符串形式的 object 里取出 %q", got, sub)
-	}
-	if f := p.userFields(); f.DisplayName != "财务只读" || f.Email != "f@example.com" {
-		t.Fatalf("userFields() = %+v，期望 displayName / email 来自 object", f)
+	if got := p.userRef(); got.ID != sub || got.Owner != "brickkit" || got.Name != "dev.finance.viewer" {
+		t.Fatalf("userRef() = %+v，期望从字符串形式的 object 里取出 id %q 与 owner/name", got, sub)
 	}
 }
 

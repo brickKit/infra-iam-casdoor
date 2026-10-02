@@ -144,9 +144,10 @@ paths:
     post:
       summary: Casdoor 的用户增删改事件回调
       description: |
-        ⚠️ 不经网关暴露——Casdoor 是带外容器，与本组件不在同一个 Docker
-        网络，经本组件 expose 出来的宿主机端口回调（地址是 configSchema 的
-        `WEBHOOK_CALLBACK_URL`）。besdk.Public 指的是"不走权限键"，不是"不
+        ⚠️ 不经网关暴露——Casdoor 接进项目网络，按本组件的服务名回调（地址是
+        configSchema 的 `WEBHOOK_CALLBACK_URL`）。事件内容不取自投递体：每次投递
+        都回 Casdoor 读这个人的当前状态再发 `infra.iam.user.*.v1`，所以投递的
+        到达顺序不影响下游最后的值。besdk.Public 指的是"不走权限键"，不是"不
         校验"——真正的校验是比对 `X-Shared-Secret`（或 Casdoor webhook
         配置里那个自定义 header 名，见 configSchema 的 `WEBHOOK_SHARED_SECRET`）
         是不是配置的共享密钥。**漏了这条校验就等于开了一个任何人都能
@@ -159,6 +160,8 @@ paths:
           description: 已接收（不代表事件已经处理完，Outbox 异步发布）
         "401":
           description: 共享密钥校验失败
+        "503":
+          description: 读不回 Casdoor 里这个人的当前状态（管理会话还没就绪或 Casdoor 出错）；投递不登记
 
 components:
   securitySchemes:
