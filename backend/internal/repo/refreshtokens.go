@@ -13,6 +13,9 @@ import (
 // 总期限（session_expires_at），之后每次轮换原样继承，见 RotateRefreshToken。
 func (r *Repo) IssueRefreshToken(ctx context.Context, jti, sub string, expiresAt time.Time) error {
 	err := besdk.WithTx(ctx, r.db, r.role, r.schema, func(tx *sql.Tx) error {
+		if err := lockSubTokensTx(ctx, tx, sub); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO refresh_tokens (jti, sub, expires_at, session_expires_at) VALUES ($1, $2, $3, $3)`,
 			jti, sub, expiresAt)
@@ -52,6 +55,9 @@ type MintRefreshToken func(notAfter time.Time) (jti string, expiresAt time.Time,
 func (r *Repo) RotateRefreshToken(ctx context.Context, oldJTI, sub string, mint MintRefreshToken) error {
 	invalid := false
 	err := besdk.WithTx(ctx, r.db, r.role, r.schema, func(tx *sql.Tx) error {
+		if err := lockSubTokensTx(ctx, tx, sub); err != nil {
+			return err
+		}
 		var gotSub string
 		var revokedAt sql.NullTime
 		var expiresAt, sessionExpiresAt time.Time
@@ -145,9 +151,29 @@ func (r *Repo) RevokeAllRefreshTokensForSub(ctx context.Context, sub string) err
 // 崩在两次提交之间，会出现"inbox 说处理过了，但 token 其实没撤销"这种
 // 悄悄漏判的情况（同 erp-finance consumer.go 的既有教训：那边的
 // PostSalesOrderEntryTx 就是为了同一个理由才拆出 Tx 版本）。
+//
+// ⚠️ 先拿 lockSubTokensTx：这个人正好有一次刷新在轮换中途时，只靠行锁会漏掉轮换提交的
+// 新 token（见 lockSubTokensTx）。
 func RevokeAllRefreshTokensForSubTx(ctx context.Context, tx *sql.Tx, sub string) error {
+	if err := lockSubTokensTx(ctx, tx, sub); err != nil {
+		return err
+	}
 	_, err := tx.ExecContext(ctx,
 		`UPDATE refresh_tokens SET revoked_at = now(), updated_at = now()
 		 WHERE sub = $1 AND revoked_at IS NULL`, sub)
+	return err
+}
+
+// lockSubTokensTx 取一把按人的事务级 advisory 锁：登记、轮换、撤销全部一个人的 refresh
+// token 都先拿它，同一个人的这几件事因此串行。
+//
+// ⚠️ 只靠行锁不够：撤销全部（UPDATE … WHERE sub = $1）碰上一次轮换中途，会在旧行上等
+// FOR UPDATE；等到时旧行已被轮换撤销（跳过），轮换刚插的新行又不在这条 UPDATE 的快照里，
+// 新 token 就漏网了——在 Casdoor 里停用的人恰好在那一刻刷新，就还能一直刷下去。拿了这把锁，
+// 撤销要么在轮换之前（轮换看到旧行已撤销，按重放处理、401），要么在轮换提交之后开始
+// （看得到新行）。TestRevokeAll_与轮换并发_轮换出的新token也被撤销。
+func lockSubTokensTx(ctx context.Context, tx *sql.Tx, sub string) error {
+	_, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('infra_iam_casdoor.refresh_tokens'), hashtext($1))`, sub)
 	return err
 }

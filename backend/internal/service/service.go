@@ -282,6 +282,13 @@ func (s *Service) publishCurrentState(ctx, rctx context.Context, tx *sql.Tx, use
 	if err != nil {
 		return "", "", err
 	}
+	if ev.Subject == subjectUserDisabled {
+		// 在 Casdoor 里停用、删除或已经不在的人：同一个事务里作废他全部 refresh token，下一次
+		// 刷新就是 401。不撤的话他手里的会话一直刷新到会话期限（发布前审查 I1b）。
+		if err := repo.RevokeAllRefreshTokensForSubTx(ctx, tx, sub); err != nil {
+			return "", "", err
+		}
+	}
 	if err := besdk.PublishOutbox(tx, s.schema, ev); err != nil {
 		return "", "", err
 	}

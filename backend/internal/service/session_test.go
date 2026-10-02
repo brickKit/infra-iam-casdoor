@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 )
 
 // 会话的总期限从登录那一刻算，轮换不续期：一个每隔几分钟刷新一次的会话，过了登录时
@@ -45,5 +47,46 @@ func TestRefreshToken_轮换不延长会话_过了登录时的期限就拒绝(t 
 	}
 	if refusedAt > ttl+time.Second {
 		t.Fatalf("到 %v 才拒绝，期望在登录后 %v 左右", refusedAt, ttl)
+	}
+}
+
+// 在 Casdoor 里停用或删掉一个人：投递处理完之后这个人的 refresh token 全部作废，下一次
+// 刷新就是 401（应用 token 最多再用 APP_TOKEN_TTL_SECONDS）。只撤这个人的，别人不受影响
+// （发布前审查 I1b）。
+func TestWebhook_停用或删除用户_他的refreshToken立即作废(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state func(users *fakeUsers, sub string)
+	}{
+		{"isForbidden", func(users *fakeUsers, sub string) {
+			users.put(casdoor.User{ID: sub, Owner: "brickkit", Name: sub, DisplayName: "停用", IsForbidden: true})
+		}},
+		{"Casdoor里已删除", func(users *fakeUsers, sub string) { users.remove(sub) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := newServiceWithAuthz(t, time.Hour)
+			ctx := context.Background()
+			users := withUsers(svc)
+			sub, other := uniqueID("casdoor-uuid"), uniqueID("casdoor-uuid")
+			users.put(casdoor.User{ID: sub, Owner: "brickkit", Name: sub, DisplayName: "在职"})
+			pair, err := svc.issueFor(ctx, sub)
+			if err != nil {
+				t.Fatal(err)
+			}
+			otherPair, err := svc.issueFor(ctx, other)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			tc.state(users, sub)
+			deliver(t, svc, deliveryWithObject(t, "update-user", map[string]any{"id": sub}))
+
+			if _, err := svc.RefreshToken(ctx, pair.RefreshToken); !errors.Is(err, ErrUnauthenticated) {
+				t.Fatalf("停用后刷新期望 ErrUnauthenticated（401），实际 %v", err)
+			}
+			if _, err := svc.RefreshToken(ctx, otherPair.RefreshToken); err != nil {
+				t.Fatalf("别人的 refresh token 不该受影响：%v", err)
+			}
+		})
 	}
 }

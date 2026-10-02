@@ -400,3 +400,46 @@ func mintAs(jti string, expiresAt time.Time) MintRefreshToken {
 		return jti, expiresAt, nil
 	}
 }
+
+// 撤销一个人全部 refresh token 时，他正好有一次刷新在轮换中途：轮换提交的新 token 也必须
+// 被撤掉。只靠行锁不够——撤销的 UPDATE 在旧行上等锁，等到的时候旧行已经被撤销（跳过），
+// 新插的行不在它的快照里，新 token 就漏网了。两边都先拿同一把按人的 advisory 锁。
+func TestRevokeAll_与轮换并发_轮换出的新token也被撤销(t *testing.T) {
+	r := testRepo(t)
+	ctx := context.Background()
+	sub := uniqueID("sub")
+	jti1, jti2 := uniqueID("jti"), uniqueID("jti")
+	if err := r.IssueRefreshToken(ctx, jti1, sub, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	minting := make(chan struct{})
+	release := make(chan struct{})
+	rotated := make(chan error, 1)
+	go func() {
+		rotated <- r.RotateRefreshToken(ctx, jti1, sub, func(notAfter time.Time) (string, time.Time, error) {
+			close(minting)
+			<-release // 停在轮换事务中途（旧行已加 FOR UPDATE，新行还没插）
+			return jti2, notAfter, nil
+		})
+	}()
+	<-minting
+	revoked := make(chan error, 1)
+	go func() { revoked <- r.RevokeAllRefreshTokensForSub(ctx, sub) }()
+	time.Sleep(200 * time.Millisecond) // 让撤销在轮换提交之前开始等
+	close(release)
+	if err := <-rotated; err != nil {
+		t.Fatalf("轮换失败：%v", err)
+	}
+	if err := <-revoked; err != nil {
+		t.Fatalf("撤销失败：%v", err)
+	}
+
+	var live int
+	if err := testDB(t).QueryRow(`SELECT count(*) FROM infra_iam_casdoor.refresh_tokens WHERE sub = $1 AND revoked_at IS NULL`, sub).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != 0 {
+		t.Fatalf("撤销之后这个人还有 %d 个有效 refresh token（轮换中途插进来的新 token 漏网）", live)
+	}
+}
