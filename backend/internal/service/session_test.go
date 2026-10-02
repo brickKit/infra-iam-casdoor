@@ -13,7 +13,7 @@ import (
 
 // 会话的总期限从登录那一刻算，轮换不续期：一个每隔几分钟刷新一次的会话，过了登录时
 // 定下的期限就必须重新登录。否则只要客户端还在刷新，会话永远不结束——在 Casdoor 里
-// 停用的人也一样（发布前审查 I1）。
+// 停用的人也一样。
 func TestRefreshToken_轮换不延长会话_过了登录时的期限就拒绝(t *testing.T) {
 	const ttl = 2 * time.Second
 	svc, _ := newServiceWithAuthz(t, ttl)
@@ -53,8 +53,7 @@ func TestRefreshToken_轮换不延长会话_过了登录时的期限就拒绝(t 
 }
 
 // 在 Casdoor 里停用或删掉一个人：投递处理完之后这个人的 refresh token 全部作废，下一次
-// 刷新就是 401（应用 token 最多再用 APP_TOKEN_TTL_SECONDS）。只撤这个人的，别人不受影响
-// （发布前审查 I1b）。
+// 刷新就是 401（应用 token 最多再用 APP_TOKEN_TTL_SECONDS）。只撤这个人的，别人不受影响。
 func TestWebhook_停用或删除用户_他的refreshToken立即作废(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -118,7 +117,7 @@ func TestExchangeToken_Casdoor里停用的人不能拿旧id_token换新会话_�
 }
 
 // Casdoor id_token 的 aud 必须是本组件信任的应用：同一个 Casdoor 里别的应用（含内置的
-// app-built-in）签给用户的 id_token 不能换出本项目的应用 token（发布前审查 I3）。
+// app-built-in）签给用户的 id_token 不能换出本项目的应用 token。
 func TestExchangeToken_只认可信应用签给用户的id_token(t *testing.T) {
 	const extra = "extra-trusted-client-id"
 	for _, tc := range []struct {

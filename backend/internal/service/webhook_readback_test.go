@@ -233,8 +233,7 @@ func TestWebhook_只带owner与name且查不到的人_标IGNORED(t *testing.T) {
 }
 
 // Casdoor 管理会话还没就绪时读不回当前状态：照样登记（RECEIVED）、回成功，等会话就绪后
-// 由队列处理（Casdoor 从不重发投递，回 503 就永远丢了；发布前审查 I2 推翻了 R61 时的
-// "回 503、不登记"）。
+// 由队列处理（Casdoor 从不重发投递，回 503 就永远丢了）。
 func TestWebhook_Casdoor会话未就绪_登记RECEIVED且回成功(t *testing.T) {
 	svc, _ := newTestService(t)
 	db := testDB(t)

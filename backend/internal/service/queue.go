@@ -103,7 +103,7 @@ func (s *Service) retryDecision(logger *slog.Logger, d repo.Delivery, err error)
 	return repo.RetryDecision{After: after, ErrMsg: msg}
 }
 
-// processDelivery 处理一条已认领的投递：认出是谁 → 回读当前状态 → 发事件（R61 的做法，
+// processDelivery 处理一条已认领的投递：认出是谁 → 回读当前状态 → 发事件（docs/design.md"用户事件怎么发"的做法，
 // 只是从 webhook 请求里挪到了这里）。认领它的事务已经锁住这一行。
 func (s *Service) processDelivery(ctx context.Context, tx *sql.Tx, users UserReader, d repo.Delivery) (string, string, error) {
 	var payload webhookUserPayload

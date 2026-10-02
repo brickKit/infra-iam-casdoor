@@ -146,7 +146,7 @@ func TestAdminClient与IDTokenVerifier_真机走一遍完整流程(t *testing.T)
 		t.Fatal("验签成功但 sub 为空")
 	}
 	// 真实 Casdoor 的 id_token 的 aud 是签发它的应用的 client ID：别的应用的 client ID
-	// 不信任它（发布前审查 I3）。
+	// 不信任它。
 	if _, err := v.Verify(idToken, []string{"some-other-application-client-id"}); err == nil {
 		t.Fatal("aud 不是可信的 client ID 时应该验签失败")
 	}

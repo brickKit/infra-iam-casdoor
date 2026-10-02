@@ -190,7 +190,7 @@ func TestREST_webhook共享密钥不对回401(t *testing.T) {
 }
 
 // Casdoor 从不重发投递：读不回用户（这里是管理会话还没就绪）时也要登记下来、回 200，
-// 回读交给后台循环。回 503 的话这条投递就永远丢了（发布前审查 I2）。
+// 回读交给后台循环。回 503 的话这条投递就永远丢了。
 func TestREST_webhook读不回Casdoor用户时也回200并登记RECEIVED(t *testing.T) {
 	f := newFixture(t, besdk.NewConfig(nil), false) // 没接 UserReader = 管理会话没就绪
 	obj, _ := json.Marshal(map[string]any{"owner": "brickkit", "name": "x", "id": uniqueSub("wh")})

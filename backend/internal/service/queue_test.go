@@ -18,7 +18,7 @@ import (
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 )
 
-// 这一组测的是投递队列（发布前审查 I2）：Casdoor 从不重发投递，所以本组件收到就登记成
+// 这一组测的是投递队列：Casdoor 从不重发投递，所以本组件收到就登记成
 // RECEIVED、回 200，回读与发事件交给后台循环。Casdoor 暂时读不了时投递留在队列里，
 // 恢复后照常发出；读得到但一直出错的，有限次重试后标 FAILED。
 

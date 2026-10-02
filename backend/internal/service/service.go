@@ -310,7 +310,7 @@ func (s *Service) publishCurrentState(ctx, rctx context.Context, tx *sql.Tx, use
 	}
 	if ev.Subject == subjectUserDisabled {
 		// 在 Casdoor 里停用、删除或已经不在的人：同一个事务里作废他全部 refresh token，下一次
-		// 刷新就是 401。不撤的话他手里的会话一直刷新到会话期限（发布前审查 I1b）。上面记下的
+		// 刷新就是 401。不撤的话他手里的会话一直刷新到会话期限。上面记下的
 		// disabled 让他手里的旧 Casdoor id_token 也换不出新会话（IssueRefreshToken）。
 		if err := repo.RevokeAllRefreshTokensForSubTx(ctx, tx, sub); err != nil {
 			return "", "", err
