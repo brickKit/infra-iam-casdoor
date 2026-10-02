@@ -246,95 +246,127 @@ func assertJSONFieldEquals(t *testing.T, raw []byte, field, want string) {
 	}
 }
 
-func TestRecordDelivery_去重与发布(t *testing.T) {
+func TestRecordDelivery_去重(t *testing.T) {
 	r := testRepo(t)
 	ctx := context.Background()
 	dedupKey := uniqueID("dedup")
 
-	published := false
-	isNew, err := r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{"a":1}`),
-		func(tx *sql.Tx) (string, string, error) {
-			published = true
-			_, err := tx.ExecContext(ctx, `SELECT 1`) // 占位写：真实调用方会 PublishOutbox
-			return "PROCESSED", "", err
-		})
+	isNew, err := r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{"a":1}`), "RECEIVED", "")
 	if err != nil {
 		t.Fatalf("第一次登记失败：%v", err)
 	}
 	if !isNew {
 		t.Fatal("第一次应该是新投递")
 	}
-	if !published {
-		t.Fatal("第一次应该调用 publish 回调")
-	}
-
-	published = false
-	isNew, err = r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{"a":1}`),
-		func(tx *sql.Tx) (string, string, error) {
-			published = true
-			return "PROCESSED", "", nil
-		})
+	isNew, err = r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{"a":1}`), "IGNORED", "不该写进去")
 	if err != nil {
 		t.Fatalf("重投不该报错：%v", err)
 	}
 	if isNew {
 		t.Fatal("重投应该被判定为不是新投递")
 	}
-	if published {
-		t.Fatal("重投不该再次调用 publish 回调")
+	var status string
+	if err := testDB(t).QueryRow(`SELECT status FROM infra_iam_casdoor.webhook_deliveries WHERE dedup_key = $1`, dedupKey).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "RECEIVED" {
+		t.Fatalf("重投不该改第一次登记的状态，实际 %s", status)
 	}
 }
 
-// TestRecordDelivery_publish失败整体回滚 用 deliberate break
-// 的方式验证事务原子性：publish 回调失败时，webhook_deliveries 的
-// 那条 INSERT 也必须跟着回滚——否则会出现"记录了投递但事件其实没发出
-// 去、且下次重投会被误判成重复"的悬空状态。
-func TestRecordDelivery_publish失败整体回滚(t *testing.T) {
+// 处理失败时 handle 写过的东西必须全部回滚（savepoint），投递按重试决定记次数、往后推；
+// 否则会出现"版本号已经占了、事件却没发"这类悬空状态。
+func TestProcessNextDelivery_处理失败时回滚handle写的东西并记次数(t *testing.T) {
 	r := testRepo(t)
 	ctx := context.Background()
-	dedupKey := uniqueID("dedup")
+	prefix := uniqueID("q") + ":"
+	dedupKey := prefix + "1"
+	sub := uniqueID("sub")
+	if _, err := r.RecordDelivery(ctx, dedupKey, "update-user", []byte(`{}`), "RECEIVED", ""); err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{}`),
-		func(tx *sql.Tx) (string, string, error) {
+	found, handleErr, err := r.ProcessNextDelivery(ctx, prefix,
+		func(tx *sql.Tx, d Delivery) (string, string, error) {
+			if d.DedupKey != dedupKey {
+				t.Errorf("认领到 %s，期望 %s", d.DedupKey, dedupKey)
+			}
+			if _, err := r.NextUserEventVersionTx(ctx, tx, sub, 1); err != nil {
+				return "", "", err
+			}
 			return "", "", fmt.Errorf("故意失败")
-		})
-	if err == nil {
-		t.Fatal("publish 失败应该导致整个调用失败")
+		},
+		func(d Delivery, err error) RetryDecision { return RetryDecision{After: time.Hour, ErrMsg: err.Error()} })
+	if err != nil || !found || handleErr == nil {
+		t.Fatalf("期望认领到并记下处理错误，found=%v handleErr=%v err=%v", found, handleErr, err)
 	}
 
-	// 因为回滚了，dedupKey 应该"从未出现过"——用它重新登记一次应该被
-	// 判定为 isNew=true，而不是当成重投跳过。
-	isNew, err := r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{}`),
-		func(tx *sql.Tx) (string, string, error) { return "IGNORED", "", nil })
-	if err != nil {
-		t.Fatalf("回滚后重新登记不该报错：%v", err)
+	db := testDB(t)
+	var versions int
+	if err := db.QueryRow(`SELECT count(*) FROM infra_iam_casdoor.user_event_versions WHERE sub = $1`, sub).Scan(&versions); err != nil {
+		t.Fatal(err)
 	}
-	if !isNew {
-		t.Fatal("回滚后重新登记应该被判定为新投递（证明第一次真的整体回滚了）")
+	if versions != 0 {
+		t.Fatal("handle 失败后它取的版本号应该回滚掉")
+	}
+	var status, msg string
+	var attempts int
+	var later bool
+	if err := db.QueryRow(`SELECT status, error, attempts, next_attempt_at > now() + interval '50 minutes'
+		FROM infra_iam_casdoor.webhook_deliveries WHERE dedup_key = $1`, dedupKey).Scan(&status, &msg, &attempts, &later); err != nil {
+		t.Fatal(err)
+	}
+	if status != "RECEIVED" || attempts != 1 || !later || msg != "故意失败" {
+		t.Fatalf("期望 RECEIVED、attempts=1、一小时后再试、记下错误，实际 %s/%d/往后推=%v/%q", status, attempts, later, msg)
+	}
+	if found, _, err := r.ProcessNextDelivery(ctx, prefix,
+		func(*sql.Tx, Delivery) (string, string, error) { return "PROCESSED", "", nil },
+		func(Delivery, error) RetryDecision { return RetryDecision{} }); err != nil || found {
+		t.Fatalf("还没到重试时刻不该被认领，found=%v err=%v", found, err)
 	}
 }
 
-// Casdoor 超时重投时，前一次投递可能还没处理完：同一条投递并发到达多次，事件
-// 只能发一次。先查再插的两个事务都会在对方提交之前查到"不存在"，于是都插、都
-// 发——下游（infra-notification 等）收到两条同样的用户事件。
-func TestRecordDelivery_同一投递并发到达只发布一次(t *testing.T) {
+// Leave（Casdoor 不可达）：投递原样留着，不计次数，下一轮马上还能认领。
+func TestProcessNextDelivery_Leave不计次数且仍可认领(t *testing.T) {
+	r := testRepo(t)
+	ctx := context.Background()
+	prefix := uniqueID("q") + ":"
+	dedupKey := prefix + "1"
+	if _, err := r.RecordDelivery(ctx, dedupKey, "update-user", []byte(`{}`), "RECEIVED", ""); err != nil {
+		t.Fatal(err)
+	}
+	fail := func(*sql.Tx, Delivery) (string, string, error) { return "", "", fmt.Errorf("Casdoor 不在") }
+	leave := func(Delivery, error) RetryDecision { return RetryDecision{Leave: true} }
+	if _, handleErr, err := r.ProcessNextDelivery(ctx, prefix, fail, leave); err != nil || handleErr == nil {
+		t.Fatalf("handleErr=%v err=%v", handleErr, err)
+	}
+	found, _, err := r.ProcessNextDelivery(ctx, prefix,
+		func(_ *sql.Tx, d Delivery) (string, string, error) {
+			if d.Attempts != 0 {
+				t.Errorf("Leave 不该计次数，attempts=%d", d.Attempts)
+			}
+			return "PROCESSED", "", nil
+		}, leave)
+	if err != nil || !found {
+		t.Fatalf("Leave 之后应该马上还能认领，found=%v err=%v", found, err)
+	}
+}
+
+// Casdoor 超时重投时，前一次投递可能还没登记完：同一条投递并发到达多次，只能登记一次
+// （之后也只会被处理一次）。先查再插的两个事务都会在对方提交之前查到"不存在"，于是都插。
+func TestRecordDelivery_同一投递并发到达只登记一次(t *testing.T) {
 	r := testRepo(t)
 	ctx := context.Background()
 	dedupKey := uniqueID("dedup-concurrent")
 
 	const n = 8
-	var published, fresh atomic.Int32
+	var fresh atomic.Int32
 	errs := make(chan error, n)
 	start := make(chan struct{})
 	for i := 0; i < n; i++ {
 		go func() {
 			<-start
-			isNew, err := r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{"a":1}`),
-				func(tx *sql.Tx) (string, string, error) {
-					published.Add(1)
-					time.Sleep(100 * time.Millisecond) // 让别的投递在本事务提交前查一次
-					return "PROCESSED", "", nil
-				})
+			isNew, err := r.RecordDelivery(ctx, dedupKey, "add-user", []byte(`{"a":1}`), "RECEIVED", "")
 			if isNew {
 				fresh.Add(1)
 			}
@@ -347,11 +379,15 @@ func TestRecordDelivery_同一投递并发到达只发布一次(t *testing.T) {
 			t.Fatalf("并发投递不该报错：%v", err)
 		}
 	}
-	if got := published.Load(); got != 1 {
-		t.Fatalf("同一投递并发到达 %d 次，事件应只发布 1 次，实际 %d 次", n, got)
-	}
 	if got := fresh.Load(); got != 1 {
-		t.Fatalf("应恰好 1 次判为新投递，实际 %d 次", got)
+		t.Fatalf("同一投递并发到达 %d 次，应恰好 1 次判为新投递，实际 %d 次", n, got)
+	}
+	var rows int
+	if err := testDB(t).QueryRow(`SELECT count(*) FROM infra_iam_casdoor.webhook_deliveries WHERE dedup_key = $1`, dedupKey).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("应只登记 1 行，实际 %d 行", rows)
 	}
 }
 

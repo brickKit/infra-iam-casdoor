@@ -18,6 +18,7 @@ type fakeUsers struct {
 	bySub     map[string]casdoor.User
 	reads     int
 	afterRead func(n int)
+	failWith  error // 非 nil 时每次查询都回这个错误（Casdoor 在、但回错误）
 }
 
 func newFakeUsers() *fakeUsers { return &fakeUsers{bySub: map[string]casdoor.User{}} }
@@ -30,10 +31,13 @@ func (f *fakeUsers) GetUserBySub(_ context.Context, sub string) (*casdoor.User, 
 	f.reads++
 	n := f.reads
 	u, ok := f.bySub[sub]
-	hook := f.afterRead
+	hook, failWith := f.afterRead, f.failWith
 	f.mu.Unlock()
 	if hook != nil {
 		hook(n)
+	}
+	if failWith != nil {
+		return nil, failWith
 	}
 	if !ok {
 		return nil, nil
@@ -44,6 +48,9 @@ func (f *fakeUsers) GetUserBySub(_ context.Context, sub string) (*casdoor.User, 
 func (f *fakeUsers) GetUserByName(_ context.Context, owner, name string) (*casdoor.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failWith != nil {
+		return nil, f.failWith
+	}
 	for _, u := range f.bySub {
 		if u.Owner == owner && u.Name == name {
 			return &u, nil
@@ -107,12 +114,9 @@ func TestHandleWebhookDelivery_真机形状的update_user标PROCESSED并写进ou
 	db := testDB(t)
 	ctx := context.Background()
 	sub := uniqueID("casdoor-uuid")
-	dedup := uniqueID("dedup")
 	withUsers(svc).put(casdoor.User{ID: sub, Owner: "brickkit", Name: "dev.finance.viewer", DisplayName: "张三", Email: "a@b.com"})
 
-	if err := svc.HandleWebhookDelivery(ctx, dedup, casdoorRecordPayload(t, "update-user", sub, "张三", "a@b.com")); err != nil {
-		t.Fatalf("处理失败：%v", err)
-	}
+	dedup := deliver(t, svc, casdoorRecordPayload(t, "update-user", sub, "张三", "a@b.com"))
 
 	var status, errMsg string
 	if err := db.QueryRowContext(ctx,

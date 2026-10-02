@@ -49,5 +49,6 @@ func newServiceWithAuthz(t *testing.T, refreshTTL time.Duration) (*Service, *rep
 	svc := New(r, cfg, "infra_iam_casdoor", testSigningKey(t), "test-kid", nil, "",
 		10*time.Minute, refreshTTL, []string{"mdm/customer"},
 		"shared-secret-for-test", "X-Shared-Secret")
+	forTest(svc)
 	return svc, r
 }

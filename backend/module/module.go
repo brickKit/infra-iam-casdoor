@@ -45,7 +45,7 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 	// 时才 Load()——见 grpc.go 顶部注释，RegisterGRPC 与 Start() 是并发
 	// 起步的两件事，构造这一刻登录多半还没完成。
 	var adminClientHolder atomic.Pointer[casdoor.AdminClient]
-	// webhook 投递回读用户当前状态用的也是这条会话（R61）。⚠️ 没登录时必须返回
+	// 投递队列回读用户当前状态用的也是这条会话。⚠️ 没登录时必须返回
 	// nil 接口，不能把 nil 的 *AdminClient 装进接口（那是一个非 nil 的接口值）。
 	svc.SetUserReader(func() service.UserReader {
 		if c := adminClientHolder.Load(); c != nil {
@@ -65,17 +65,19 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 
 		// Start：登记签名密钥元数据；后台连 Casdoor 管理 API 并跑一遍自举对账、
 		// 后台做 OIDC 发现（两者都重试直到成功——Casdoor 可能比本组件起得晚，
-		// 暂时不可达不该让本组件启动失败）；起 Outbox 推送、事件消费、分区维护三个
-		// 常驻循环。
+		// 暂时不可达不该让本组件启动失败）；起 Outbox 推送、事件消费、分区维护、
+		// webhook 投递队列四个常驻循环。
 		Start: func(ctx context.Context) error {
 			registerSigningKeys(ctx, svc, cfg, rt.Logger)
 			go connectCasdoorAdmin(ctx, cfg, r, &adminClientHolder, rt.Logger)
 			go discoverIDTokenVerifier(ctx, cfg.casdoorBaseURL, svc, rt.Logger)
 
-			errCh := make(chan error, 3)
+			errCh := make(chan error, 4)
 			go func() { errCh <- besdk.StartOutboxPump(ctx, rt.DB, cfg.schema, rt.NATS, rt.Logger) }()
 			go func() { errCh <- consumer.Start(ctx, rt.DB, cfg.role, cfg.schema, rt.NATS, rt.Logger) }()
 			go func() { errCh <- partition.Start(ctx, rt.DB, cfg.role, cfg.schema, rt.Logger) }()
+			// Casdoor 从不重发投递：webhook 只登记，回读与发事件在这里做（service/queue.go）
+			go func() { errCh <- svc.RunDeliveryLoop(ctx, rt.Logger) }()
 
 			select {
 			case <-ctx.Done():

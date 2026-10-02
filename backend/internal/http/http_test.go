@@ -189,15 +189,23 @@ func TestREST_webhook共享密钥不对回401(t *testing.T) {
 	}
 }
 
-// R61：事件内容回 Casdoor 读，读不回来（管理会话还没就绪）时回 503、不登记，
-// Casdoor 那一侧记一条发送失败。
-func TestREST_webhook读不回Casdoor用户时回503(t *testing.T) {
+// Casdoor 从不重发投递：读不回用户（这里是管理会话还没就绪）时也要登记下来、回 200，
+// 回读交给后台循环。回 503 的话这条投递就永远丢了（发布前审查 I2）。
+func TestREST_webhook读不回Casdoor用户时也回200并登记RECEIVED(t *testing.T) {
 	f := newFixture(t, besdk.NewConfig(nil), false) // 没接 UserReader = 管理会话没就绪
 	obj, _ := json.Marshal(map[string]any{"owner": "brickkit", "name": "x", "id": uniqueSub("wh")})
 	body, _ := json.Marshal(map[string]any{"action": "update-user", "object": string(obj)})
 	w := f.do(t, http.MethodPost, "/api/iam/webhooks/casdoor", string(body), map[string]string{"X-Shared-Secret": testSecret})
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("期望 503，实际 %d（%s）", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d（%s）", w.Code, w.Body.String())
+	}
+	var status string
+	if err := testDB(t).QueryRow(`SELECT status FROM infra_iam_casdoor.webhook_deliveries WHERE dedup_key = $1`,
+		dedupKeyFor(body)).Scan(&status); err != nil {
+		t.Fatalf("投递应已登记：%v", err)
+	}
+	if status != "RECEIVED" {
+		t.Fatalf("投递状态 %s，期望 RECEIVED（等后台循环回读）", status)
 	}
 }
 

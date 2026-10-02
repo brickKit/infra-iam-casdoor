@@ -73,7 +73,20 @@ func newTestServiceWithConfig(t *testing.T, cfg besdk.Config) (*Service, *repo.R
 	svc := New(r, cfg, "infra_iam_casdoor", signingKey, "test-kid", nil, "",
 		10*time.Minute, 7*24*time.Hour, []string{"mdm/customer", "erp/sales"},
 		"shared-secret-for-test", "X-Shared-Secret")
+	forTest(svc)
 	return svc, r
+}
+
+// fastQueueTiming 把投递队列的等待都换成毫秒级。
+var fastQueueTiming = queueTiming{
+	poll: 20 * time.Millisecond, retryBase: time.Millisecond, retryMax: 5 * time.Millisecond,
+	downFirst: 20 * time.Millisecond, downMax: 50 * time.Millisecond,
+}
+
+// forTest 让 svc 的投递队列只认领本测试登记的投递（dedupFor 起的键），等待换成毫秒级。
+func forTest(svc *Service) {
+	svc.claimPrefix = uniqueID("q") + ":"
+	svc.queue = fastQueueTiming
 }
 
 // fakeCasdoorJWKS 是"自己签发、自己验签"的测试夹具（同 be-sdk-go

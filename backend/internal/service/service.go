@@ -38,7 +38,10 @@ type Service struct {
 	enabled      []string          // ENABLED_COMPONENTS 拆分结果
 	sharedSecret string            // webhook 共享密钥
 	sharedHeader string            // 共享密钥所在的 header 名
-	users        func() UserReader // webhook 回读用户当前状态用；返回 nil = Casdoor 管理会话还没就绪
+	users        func() UserReader // 投递队列回读用户当前状态用；返回 nil = Casdoor 管理会话还没就绪
+	queue        queueTiming       // 投递队列的时间参数（queue.go）
+	wake         chan struct{}     // 新登记的投递唤醒本进程的处理循环
+	claimPrefix  string            // 只认领 dedup_key 以它开头的投递；生产为空，测试用来隔离
 }
 
 // UserReader 是 webhook 投递回读用户当前状态用的 Casdoor 查询，*casdoor.AdminClient
@@ -70,6 +73,8 @@ func New(r *repo.Repo, cfg besdk.Config, schema string, signingKey *rsa.PrivateK
 		enabled:      enabledComponents,
 		sharedSecret: webhookSharedSecret,
 		sharedHeader: webhookSharedHeader,
+		queue:        defaultQueueTiming,
+		wake:         make(chan struct{}, 1),
 	}
 }
 
@@ -77,8 +82,8 @@ func New(r *repo.Repo, cfg besdk.Config, schema string, signingKey *rsa.PrivateK
 // （允许晚于 New 若干秒——Casdoor 可能比本组件启动得晚）。
 func (s *Service) SetIDVerifier(v *casdoor.IDTokenVerifier) { s.idVerifier.Store(v) }
 
-// SetUserReader 由 module 在构造后调用一次：f 每次投递时调用，返回当前的 Casdoor
-// 管理会话（后台登录成功之前返回 nil）。
+// SetUserReader 由 module 在构造后调用一次：投递队列每一轮调用 f，返回当前的 Casdoor
+// 管理会话（后台登录成功之前返回 nil，这时队列不认领任何投递）。
 func (s *Service) SetUserReader(f func() UserReader) { s.users = f }
 
 // JWKS 供 GET /.well-known/jwks.json 直接序列化。
@@ -213,62 +218,43 @@ func (s *Service) signAccessTokenFor(ctx context.Context, sub string) (accessTok
 
 // ── Webhook ──────────────────────────────────────────────────────────
 
-// HandleWebhookDelivery 登记一次投递（去重）并按 R61 发用户事件——校验共享密钥这一步
-// 已经在 http 层做完（"是不是 Casdoor 发的"，严格）；这里是"这条投递说的是谁"，宽容：
-// 解析不了、认不出动作、认不出是谁，都登记成 IGNORED / ERROR 并回 200。
+// HandleWebhookDelivery 去重登记一次投递，不回读 Casdoor——校验共享密钥这一步已经在
+// http 层做完（"是不是 Casdoor 发的"，严格）；这里是"这条投递说的是谁"，宽容：解析不了、
+// 认不出动作、认不出是谁，都登记成 IGNORED / ERROR；认得出的用户变更登记成 RECEIVED，
+// 交给后台的投递队列（queue.go）回 Casdoor 读这个人的当前状态再发事件。
 //
-// ⚠️ 事件内容不取自投递体，而是回 Casdoor 读这个人的当前状态（docs/design.md"用户事件
-// 怎么发"）。Casdoor 把同一秒里的两次修改按新到旧投递过，照投递体发、按处理时刻定版本号，
-// 下游就留下旧值；回读之后每条事件都是"处理那一刻的最新状态"，到达顺序不再要紧。
-// 同一个人的投递按人串行（版本号那一行的行锁，见 repo.NextUserEventVersionTx），后回读的
-// 一定拿到更大的版本号。
-//
-// 整个处理都在登记投递的那个事务里（repo.RecordDelivery）：重投直接跳过、不回读；
-// Casdoor 读不回来（管理会话没就绪、Casdoor 出错）时回 ErrUnavailable（HTTP 503），
-// 事务回滚、投递不登记——登记了就会被当成重投去重掉。
+// ⚠️ 只要登记成功就回成功（HTTP 200），不管 Casdoor 此刻读不读得到：Casdoor 从不重发投递，
+// 这里回 503 的话这条投递就永远丢了。返回 error 只有一种情况：登记本身失败（数据库）。
 func (s *Service) HandleWebhookDelivery(ctx context.Context, dedupKey string, rawPayload []byte) error {
 	var payload webhookUserPayload
-	parseErr := json.Unmarshal(rawPayload, &payload)
-	_, err := s.repo.RecordDelivery(ctx, dedupKey, payload.Action, rawPayload, func(tx *sql.Tx) (string, string, error) {
-		if parseErr != nil {
-			return "ERROR", "解析 payload 失败: " + parseErr.Error(), nil
-		}
-		kind, ok := kindOf(payload.Action)
-		if !ok {
-			return "IGNORED", "无法从 action 推出事件类型: " + payload.Action, nil
-		}
-		ref := payload.userRef()
-		if ref.ID == "" && !ref.hasName() {
-			return "IGNORED", "payload 里找不到用户标识", nil
-		}
-		var users UserReader
-		if s.users != nil {
-			users = s.users()
-		}
-		if users == nil {
-			return "", "", fmt.Errorf("%w: Casdoor 管理会话尚未就绪，读不回用户的当前状态", ErrUnavailable)
-		}
-		sub, err := s.resolveSub(ctx, tx, users, ref)
-		if err != nil {
-			return "", "", err
-		}
-		if sub == "" {
-			return "IGNORED", "投递里只有 owner/name，Casdoor 里查不到这个人，本组件也没见过这个名字", nil
-		}
-		return s.publishCurrentState(ctx, tx, users, kind, sub)
-	})
-	return err
+	status, errMsg := "RECEIVED", ""
+	if err := json.Unmarshal(rawPayload, &payload); err != nil {
+		status, errMsg = "ERROR", "解析 payload 失败: "+err.Error()
+	} else if _, ok := kindOf(payload.Action); !ok {
+		status, errMsg = "IGNORED", "无法从 action 推出事件类型: "+payload.Action
+	} else if ref := payload.userRef(); ref.ID == "" && !ref.hasName() {
+		status, errMsg = "IGNORED", "payload 里找不到用户标识"
+	}
+	isNew, err := s.repo.RecordDelivery(ctx, dedupKey, payload.Action, rawPayload, status, errMsg)
+	if err != nil {
+		return err
+	}
+	if isNew && status == "RECEIVED" {
+		s.wakeLoop()
+	}
+	return nil
 }
 
 // resolveSub 给出投递里那个人的 sub：有 id 就是 id；只有 owner/name 时先问 Casdoor，
-// 查不到（人已删除）再查本组件见过的名字。都没有返回 ""。
-func (s *Service) resolveSub(ctx context.Context, tx *sql.Tx, users UserReader, ref userRef) (string, error) {
+// 查不到（人已删除）再查本组件见过的名字。都没有返回 ""。ctx 给数据库，rctx 给 Casdoor
+// （带回读时限）。Casdoor 的错误原样包着往上传，队列据它判断是不是 Casdoor 不可达。
+func (s *Service) resolveSub(ctx, rctx context.Context, tx *sql.Tx, users UserReader, ref userRef) (string, error) {
 	if ref.ID != "" {
 		return ref.ID, nil
 	}
-	u, err := users.GetUserByName(ctx, ref.Owner, ref.Name)
+	u, err := users.GetUserByName(rctx, ref.Owner, ref.Name)
 	if err != nil {
-		return "", fmt.Errorf("%w: 按 owner/name 回读 Casdoor 用户失败: %s", ErrUnavailable, err.Error())
+		return "", fmt.Errorf("按 owner/name 回读 Casdoor 用户失败: %w", err)
 	}
 	if u != nil && u.ID != "" {
 		return u.ID, nil
@@ -278,14 +264,14 @@ func (s *Service) resolveSub(ctx context.Context, tx *sql.Tx, users UserReader, 
 
 // publishCurrentState 先锁住这个人的版本号那一行、取下一个版本号，再回读当前状态、写 outbox。
 // 顺序不能反：先回读后加锁，两次并发投递就可能"先读到旧值的那次后定版本号"。
-func (s *Service) publishCurrentState(ctx context.Context, tx *sql.Tx, users UserReader, kind actionKind, sub string) (string, string, error) {
+func (s *Service) publishCurrentState(ctx, rctx context.Context, tx *sql.Tx, users UserReader, kind actionKind, sub string) (string, string, error) {
 	version, err := s.repo.NextUserEventVersionTx(ctx, tx, sub, time.Now().UnixNano())
 	if err != nil {
 		return "", "", err
 	}
-	u, err := users.GetUserBySub(ctx, sub)
+	u, err := users.GetUserBySub(rctx, sub)
 	if err != nil {
-		return "", "", fmt.Errorf("%w: 回读 Casdoor 用户失败: %s", ErrUnavailable, err.Error())
+		return "", "", fmt.Errorf("回读 Casdoor 用户失败: %w", err)
 	}
 	if u != nil && u.Owner != "" && u.Name != "" {
 		if err := s.repo.RememberUserNameTx(ctx, tx, sub, u.Owner, u.Name); err != nil {

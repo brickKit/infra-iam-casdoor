@@ -150,8 +150,9 @@ func casdoorWebhookHandler(svc *service.Service) gin.HandlerFunc {
 			_ = c.Error(service.ToStatus(err))
 			return
 		}
-		// ⚠️ 200 不代表事件已经处理完——Outbox 异步发布（openapi 契约的
-		// 明文说明）。这里只承诺"收到了、已经安全落库去重"。
+		// ⚠️ 200 不代表事件已经发出——用户变更登记成 RECEIVED，由后台投递队列回读
+		// Casdoor 再写 outbox（service/queue.go）。这里只承诺"收到了、已经安全落库去重"；
+		// Casdoor 此刻读不读得到都回 200，因为 Casdoor 从不重发投递。
 		c.Status(http.StatusOK)
 	}
 }

@@ -84,7 +84,6 @@ func deliveryStatus(t *testing.T, db *sql.DB, dedup string) (status, errMsg stri
 func TestWebhook_两次修改倒序到达_下游留下的是最新状态(t *testing.T) {
 	svc, _ := newTestService(t)
 	db := testDB(t)
-	ctx := context.Background()
 	users := withUsers(svc)
 	sub := uniqueID("casdoor-uuid")
 	// Casdoor 里先改成"旧"、再改成"新"；两次修改的投递按新到旧到达。
@@ -93,9 +92,7 @@ func TestWebhook_两次修改倒序到达_下游留下的是最新状态(t *test
 	older := deliveryWithObject(t, "update-user", map[string]any{"owner": "brickkit", "name": "zhangsan", "id": sub, "displayName": "旧"})
 
 	for _, d := range [][]byte{newer, older} {
-		if err := svc.HandleWebhookDelivery(ctx, uniqueID("dedup"), d); err != nil {
-			t.Fatalf("处理失败：%v", err)
-		}
+		deliver(t, svc, d)
 	}
 
 	ev, ok := downstreamView(t, db, sub)
@@ -110,8 +107,8 @@ func TestWebhook_两次修改倒序到达_下游留下的是最新状态(t *test
 	}
 }
 
-// 同一个人的两次投递并发处理：先开始的那次回读停在中间时 Casdoor 里又改了一次。
-// 回读与定版本号必须按人串行，否则后回读（拿到新值）的那次可能先定下更小的版本号。
+// 同一个人的两次投递由两个处理实例并发处理：先开始的那次回读停在中间时 Casdoor 里又改了
+// 一次。回读与定版本号必须按人串行，否则后回读（拿到新值）的那次可能先定下更小的版本号。
 func TestWebhook_同一用户两次投递并发_后回读的拿到更大的版本号(t *testing.T) {
 	svc, _ := newTestService(t)
 	db := testDB(t)
@@ -129,26 +126,32 @@ func TestWebhook_同一用户两次投递并发_后回读的拿到更大的版�
 		}
 	}
 	object := map[string]any{"owner": "brickkit", "name": "lisi", "id": sub}
+	record := func() {
+		if err := svc.HandleWebhookDelivery(ctx, dedupFor(svc), deliveryWithObject(t, "update-user", object)); err != nil {
+			t.Fatalf("登记失败：%v", err)
+		}
+	}
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
-	wg.Add(1)
-	go func() {
+	process := func() {
 		defer wg.Done()
-		errs <- svc.HandleWebhookDelivery(ctx, uniqueID("dedup"), deliveryWithObject(t, "update-user", object))
-	}()
+		_, err := svc.ProcessDueDeliveries(ctx, discardLogger())
+		errs <- err
+	}
+	record()
+	wg.Add(1)
+	go process() // 认领第一条，回读停在中间
 	select {
 	case <-firstReading:
 	case <-time.After(5 * time.Second):
 		t.Fatal("第一次投递一直没有回读 Casdoor")
 	}
 	users.put(casdoor.User{ID: sub, Owner: "brickkit", Name: "lisi", DisplayName: "第二次"})
+	record()
 	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		errs <- svc.HandleWebhookDelivery(ctx, uniqueID("dedup"), deliveryWithObject(t, "update-user", object))
-	}()
-	time.Sleep(300 * time.Millisecond) // 让第二次投递有机会抢在第一次提交之前跑完
+	go process()                       // 第一条被锁着，认领第二条
+	time.Sleep(300 * time.Millisecond) // 让第二个实例有机会抢在第一个提交之前跑完
 	close(release)
 	wg.Wait()
 	close(errs)
@@ -170,9 +173,7 @@ func TestWebhook_update_user到达时人已被删_发disabled(t *testing.T) {
 	sub := uniqueID("casdoor-uuid")
 	d := deliveryWithObject(t, "update-user", map[string]any{"owner": "brickkit", "name": "wangwu", "id": sub, "displayName": "王五"})
 
-	if err := svc.HandleWebhookDelivery(context.Background(), uniqueID("dedup"), d); err != nil {
-		t.Fatalf("处理失败：%v", err)
-	}
+	deliver(t, svc, d)
 	if ev, ok := downstreamView(t, db, sub); !ok || ev.Subject != "infra.iam.user.disabled.v1" {
 		t.Fatalf("Casdoor 里已没有这个人，期望 disabled，实际 %+v（有事件=%v）", ev, ok)
 	}
@@ -185,9 +186,7 @@ func TestWebhook_update_user把人停用_发disabled(t *testing.T) {
 	withUsers(svc).put(casdoor.User{ID: sub, Owner: "brickkit", Name: "zhaoliu", DisplayName: "赵六", IsForbidden: true})
 	d := deliveryWithObject(t, "update-user", map[string]any{"owner": "brickkit", "name": "zhaoliu", "id": sub, "isForbidden": true})
 
-	if err := svc.HandleWebhookDelivery(context.Background(), uniqueID("dedup"), d); err != nil {
-		t.Fatalf("处理失败：%v", err)
-	}
+	deliver(t, svc, d)
 	if ev, ok := downstreamView(t, db, sub); !ok || ev.Subject != "infra.iam.user.disabled.v1" {
 		t.Fatalf("Casdoor 里这个人已停用，期望 disabled，实际 %+v（有事件=%v）", ev, ok)
 	}
@@ -199,17 +198,12 @@ func TestWebhook_update_user把人停用_发disabled(t *testing.T) {
 func TestWebhook_只带owner与name的增删用户_经回读找到sub(t *testing.T) {
 	svc, _ := newTestService(t)
 	db := testDB(t)
-	ctx := context.Background()
 	users := withUsers(svc)
 	sub := uniqueID("casdoor-uuid")
 	name := uniqueID("sunqi")
 	users.put(casdoor.User{ID: sub, Owner: "brickkit", Name: name, DisplayName: "孙七", Email: "s@example.com"})
 
-	addDedup := uniqueID("dedup")
-	if err := svc.HandleWebhookDelivery(ctx, addDedup,
-		deliveryWithObject(t, "add-user", map[string]any{"owner": "brickkit", "name": name})); err != nil {
-		t.Fatalf("处理 add-user 失败：%v", err)
-	}
+	addDedup := deliver(t, svc, deliveryWithObject(t, "add-user", map[string]any{"owner": "brickkit", "name": name}))
 	if status, msg := deliveryStatus(t, db, addDedup); status != "PROCESSED" {
 		t.Fatalf("add-user 投递状态 %s（%s），期望 PROCESSED", status, msg)
 	}
@@ -218,11 +212,7 @@ func TestWebhook_只带owner与name的增删用户_经回读找到sub(t *testing
 	}
 
 	users.remove(sub)
-	delDedup := uniqueID("dedup")
-	if err := svc.HandleWebhookDelivery(ctx, delDedup,
-		deliveryWithObject(t, "delete-user", map[string]any{"owner": "brickkit", "name": name})); err != nil {
-		t.Fatalf("处理 delete-user 失败：%v", err)
-	}
+	delDedup := deliver(t, svc, deliveryWithObject(t, "delete-user", map[string]any{"owner": "brickkit", "name": name}))
 	if status, msg := deliveryStatus(t, db, delDedup); status != "PROCESSED" {
 		t.Fatalf("delete-user 投递状态 %s（%s），期望 PROCESSED", status, msg)
 	}
@@ -236,30 +226,33 @@ func TestWebhook_只带owner与name且查不到的人_标IGNORED(t *testing.T) {
 	svc, _ := newTestService(t)
 	db := testDB(t)
 	withUsers(svc)
-	dedup := uniqueID("dedup")
-	if err := svc.HandleWebhookDelivery(context.Background(), dedup,
-		deliveryWithObject(t, "delete-user", map[string]any{"owner": "brickkit", "name": uniqueID("ghost")})); err != nil {
-		t.Fatalf("处理失败：%v", err)
-	}
+	dedup := deliver(t, svc, deliveryWithObject(t, "delete-user", map[string]any{"owner": "brickkit", "name": uniqueID("ghost")}))
 	if status, _ := deliveryStatus(t, db, dedup); status != "IGNORED" {
 		t.Fatalf("投递状态 %s，期望 IGNORED", status)
 	}
 }
 
-// Casdoor 管理会话还没就绪时读不回当前状态：回 503，不登记这条投递（登记了就会
-// 被当成重投去重掉）。
-func TestWebhook_Casdoor会话未就绪_回Unavailable且不登记(t *testing.T) {
+// Casdoor 管理会话还没就绪时读不回当前状态：照样登记（RECEIVED）、回成功，等会话就绪后
+// 由队列处理（Casdoor 从不重发投递，回 503 就永远丢了；发布前审查 I2 推翻了 R61 时的
+// "回 503、不登记"）。
+func TestWebhook_Casdoor会话未就绪_登记RECEIVED且回成功(t *testing.T) {
 	svc, _ := newTestService(t)
 	db := testDB(t)
 	svc.SetUserReader(func() UserReader { return nil })
-	dedup := uniqueID("dedup")
+	dedup := dedupFor(svc)
 	err := svc.HandleWebhookDelivery(context.Background(), dedup,
 		deliveryWithObject(t, "update-user", map[string]any{"owner": "brickkit", "name": "x", "id": uniqueID("casdoor-uuid")}))
-	if !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("期望 ErrUnavailable，实际 %v", err)
+	if err != nil {
+		t.Fatalf("期望登记成功，实际 %v", err)
 	}
-	if status, _ := deliveryStatus(t, db, dedup); status != "" {
-		t.Fatalf("没处理成的投递不该登记，实际状态 %s", status)
+	if status, _ := deliveryStatus(t, db, dedup); status != "RECEIVED" {
+		t.Fatalf("投递状态 %q，期望 RECEIVED", status)
+	}
+	if _, err := svc.ProcessDueDeliveries(context.Background(), discardLogger()); !errors.Is(err, errSessionNotReady) {
+		t.Fatalf("会话没就绪时队列不该认领，期望 errSessionNotReady，实际 %v", err)
+	}
+	if status, _ := deliveryStatus(t, db, dedup); status != "RECEIVED" {
+		t.Fatalf("会话没就绪时投递应留在队列里，实际 %q", status)
 	}
 }
 
@@ -283,15 +276,11 @@ func TestWebhook_login不回读Casdoor_标IGNORED(t *testing.T) {
 func TestWebhook_版本号每人单调且不小于处理时刻纳秒(t *testing.T) {
 	svc, _ := newTestService(t)
 	db := testDB(t)
-	ctx := context.Background()
 	sub := uniqueID("casdoor-uuid")
 	withUsers(svc).put(casdoor.User{ID: sub, Owner: "brickkit", Name: "v", DisplayName: "v"})
 	start := time.Now().UnixNano()
 	for i := 0; i < 3; i++ {
-		if err := svc.HandleWebhookDelivery(ctx, uniqueID("dedup"),
-			deliveryWithObject(t, "update-user", map[string]any{"id": sub})); err != nil {
-			t.Fatal(err)
-		}
+		deliver(t, svc, deliveryWithObject(t, "update-user", map[string]any{"id": sub}))
 	}
 	rows, err := db.Query(`SELECT version FROM infra_iam_casdoor.event_outbox WHERE aggregate_id = $1 ORDER BY id`, sub)
 	if err != nil {
