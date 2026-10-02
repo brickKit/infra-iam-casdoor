@@ -7,17 +7,14 @@ import (
 	besdk "github.com/brickKit/be-sdk-go"
 )
 
-// webhookUserPayload 宽容解析 Casdoor 的 webhook 投递体。
+// webhookUserPayload 解析 Casdoor 的 webhook 投递体。
 //
-// ⚠️ 诚实的现状（docs/design.md 的未决问题）：已经确认了 Casdoor 的 webhook
-// **支持自定义 header**（共享密钥校验的前提），但**没能在真机上实际触发并抓到一条用户增删改事件的真实
-// payload**——自助注册需要短信/邮箱验证码，受限环境走不通；管理 API
-// 建用户在真机测试里没有观察到 webhook 被调用。所以这里的字段候选是
-// 按 Casdoor 开源代码里 `object.Record`/`object.Webhook` 的公开字段名
-// 尽力猜的，不是照着抓包结果写的——`json.RawMessage` + 逐个候选尝试
-// 是刻意的防御性写法：猜错了字段名不该让整条投递直接报错，而应该在
-// webhook_deliveries 里留下"IGNORED，理由是解析不出来"的痕迹，等真的
-// 抓到一次真实 payload 之后回来对一遍、把这里改成精确解析。
+// 投递体就是 Casdoor 的 Record 对象（2026-10-02 真机抓到过 login 与 update-user 两种）：
+// action 是动作名；object 是**被 JSON 编码成字符串**的请求体——update-user / add-user
+// 时就是用户对象（口令已由 Casdoor 掩码成 "***"），login 时是登录表单（没有用户 id）；
+// user 是发起操作的账号名（管理员改别人时是 "admin"，不是被改的人）；extendedUser 在
+// isUserExtended=false 时为 null。所以用户字段从 object 里取，字符串与对象两种写法都认。
+// 投递 ID 是否稳定仍未核实，去重键用内容哈希（见 http 包的 dedupKeyFor）。
 type webhookUserPayload struct {
 	Action       string          `json:"action"`
 	Name         string          `json:"name"`
@@ -28,8 +25,7 @@ type webhookUserPayload struct {
 }
 
 // casdoorUserFields 是 Casdoor User 对象里本组件关心的字段——字段名
-// 已经通过真实签发的 token payload 核对过（sub 对应 "id"），比 action/
-// object 那层包装可信得多。
+// 已经通过真实签发的 token payload 核对过（sub 对应 "id"）。
 type casdoorUserFields struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
@@ -37,42 +33,45 @@ type casdoorUserFields struct {
 	Phone       string `json:"phone"`
 }
 
-// Sub 依次尝试 object/user/extendedUser 三个候选位置，返回第一个能解出
-// 非空 "id" 字段的结果。三个都失败时返回空字符串——调用方据此把这条
-// 投递标记 IGNORED，而不是发一个 sub 为空的事件出去。
-func (p webhookUserPayload) Sub() string {
-	for _, raw := range [][]byte{p.Object, p.User, p.ExtendedUser} {
-		if len(raw) == 0 {
-			continue
-		}
-		var f casdoorUserFields
-		if err := json.Unmarshal(raw, &f); err == nil && f.ID != "" {
-			return f.ID
-		}
-	}
-	return ""
-}
+// Sub 返回投递体里被操作用户的 id（即 token 的 sub）；取不到时返回空字符串——
+// 调用方据此把这条投递标记 IGNORED，而不是发一个 sub 为空的事件出去。
+func (p webhookUserPayload) Sub() string { return p.userFields().ID }
 
-// userFields 返回三个候选位置里第一个解析成功的用户字段——Sub() 已经
-// 确认过存在，这里重复解析一次换取更简单的调用方代码（数据量小，不值得
-// 为了省一次 Unmarshal 搭一层缓存）。
+// userFields 依次尝试 object / user / extendedUser 三个位置，返回第一个能解出
+// 非空 "id" 的用户字段。每个位置既可能是 JSON 对象，也可能是装着 JSON 的字符串
+// （Casdoor 的 object 就是后者）。
 func (p webhookUserPayload) userFields() casdoorUserFields {
 	for _, raw := range [][]byte{p.Object, p.User, p.ExtendedUser} {
-		if len(raw) == 0 {
-			continue
-		}
-		var f casdoorUserFields
-		if err := json.Unmarshal(raw, &f); err == nil && f.ID != "" {
+		if f, ok := decodeUser(raw); ok {
 			return f
 		}
 	}
 	return casdoorUserFields{}
 }
 
+// decodeUser 解一个候选位置：字符串先解出里面的 JSON 文本再解一次。
+func decodeUser(raw []byte) (casdoorUserFields, bool) {
+	var f casdoorUserFields
+	if len(raw) == 0 {
+		return f, false
+	}
+	if raw[0] == '"' {
+		var inner string
+		if err := json.Unmarshal(raw, &inner); err != nil {
+			return f, false
+		}
+		raw = []byte(inner)
+	}
+	if err := json.Unmarshal(raw, &f); err != nil || f.ID == "" {
+		return casdoorUserFields{}, false
+	}
+	return f, true
+}
+
 // EventSubject 把 Casdoor 的 action 名映射成本组件的事件 subject
-// （infra.iam.user.created/updated/disabled.v1）。action 的确切取值集合同样未经真机核对，这里覆盖
-// Casdoor 源码里能看到的几个明显候选，认不出的 action 返回 ok=false，
-// 调用方标 IGNORED 而不是瞎猜发一条。
+// （infra.iam.user.created/updated/disabled.v1）。真机见过 update-user 与 login（login 的 object
+// 是登录表单、没有用户 id，在 Sub 那一步就标 IGNORED）；其余几个取自 Casdoor 源码里的动作名。
+// 认不出的 action 返回 ok=false，调用方标 IGNORED 而不是瞎猜发一条。
 func (p webhookUserPayload) EventSubject(action string) (subject string, ok bool) {
 	switch action {
 	case "add-user", "signup":
