@@ -32,12 +32,6 @@ CREATE TABLE event_outbox_2026_09_28 PARTITION OF event_outbox
 CREATE INDEX event_outbox_pending ON event_outbox (status, created_at)
   WHERE status = 'PENDING';
 
--- ⚠️ 实测踩坑（同其余组件的 002 迁移）：建分区要求执行者是父表的
--- owner，迁移用管理凭据跑，建出来的表默认属于那个账号；分区维护后台
--- 任务运行时用 infra_iam_casdoor_rw（SET LOCAL ROLE 切换）建未来的
--- 分区，两者不是同一身份，必须显式把 owner 转过去。
-ALTER TABLE event_outbox OWNER TO infra_iam_casdoor_rw;
-
 CREATE TABLE event_inbox (
     id              BIGSERIAL,
     idempotency_key TEXT        NOT NULL,
@@ -61,8 +55,6 @@ CREATE TABLE event_inbox_2026_09_28 PARTITION OF event_inbox
 -- （infra.authz.user_role.changed.v1，见设计计划 §4），幂等键是
 -- "sub + authz_revision"（设计计划 §4 消费表最后一列）。
 CREATE UNIQUE INDEX event_inbox_idem ON event_inbox (idempotency_key, created_at);
-
-ALTER TABLE event_inbox OWNER TO infra_iam_casdoor_rw;
 
 -- ⚠️ 没有 command_idempotency 表：本组件的写命令天然自带幂等语义，不
 -- 需要额外的幂等键表——登出撤销一个已撤销的 refresh token 是空操作

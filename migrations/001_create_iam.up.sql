@@ -82,12 +82,6 @@ CREATE TABLE webhook_deliveries_2026_12_01 PARTITION OF webhook_deliveries
   FOR VALUES FROM ('2026-12-01') TO ('2027-01-01');
 CREATE UNIQUE INDEX webhook_deliveries_dedup_idx ON webhook_deliveries (dedup_key, received_at);
 
--- ⚠️ 实测踩坑（同 infra-authz/erp-finance 等组件的分区表迁移）：建分区
--- 要求执行者是父表的 owner，迁移用管理凭据跑，建出来的表默认属于那个
--- 账号；分区维护后台任务运行时用 infra_iam_casdoor_rw（SET LOCAL ROLE
--- 切换）建未来的分区，两者不是同一身份，必须显式把 owner 转过去。
-ALTER TABLE webhook_deliveries OWNER TO infra_iam_casdoor_rw;
-
 -- bootstrap_state：首次初始化的幂等标记（设计计划 §9 第 5 条：倾向"每次
 -- 启动都对账"而不是"只跑一次"，用这张表记录每一步是否已完成，与
 -- erp-inventory 的 claim-first 幂等是同一个判断——单机测试测不出
