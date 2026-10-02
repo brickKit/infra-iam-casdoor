@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	besdk "github.com/brickKit/be-sdk-go"
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/keys"
@@ -176,5 +177,31 @@ func TestVerifyRefreshToken_旧公钥从Verifier移除后拒绝(t *testing.T) {
 	v := NewVerifier(&newPriv.PublicKey, newKid, nil, "")
 	if _, _, err := v.VerifyRefreshToken(tok); err == nil {
 		t.Fatal("移除旧钥匙后，旧钥匙签的 token 应该验签失败")
+	}
+}
+
+// TestSignAccessToken_dept_path原样抄进token不替换 锁住"本组件只转抄 dept_path"：
+// authz 给空串（没分部门）就签空串，给 "/" 或真实路径就签原值。be-sdk-go v0.5.0 起
+// 消费方的 ScopeOf 把空串解释成 org 维哨兵（besdk.NoDeptPath，只剩本人）；签发方要是
+// 把空串换成 "/"、或者自己写进哨兵，没分部门的人就会变成看全公司（或语义被签发方篡改）。
+func TestSignAccessToken_dept_path原样抄进token不替换(t *testing.T) {
+	priv, kid := testKey(t)
+	iss := NewIssuer(priv, kid, 10*time.Minute, 7*24*time.Hour)
+	for _, dept := range []string{"", "/", "/1/", "/1/12/"} {
+		tok, _, err := iss.SignAccessToken(Claims{Sub: "u-1", Roles: []string{"u:u-1"}, DeptPath: dept, OrgID: "1"})
+		if err != nil {
+			t.Fatalf("dept_path=%q：签发失败：%v", dept, err)
+		}
+		claims := jwt.MapClaims{}
+		if _, err := jwt.ParseWithClaims(tok, claims, func(*jwt.Token) (any, error) { return &priv.PublicKey, nil }); err != nil {
+			t.Fatalf("dept_path=%q：验签失败：%v", dept, err)
+		}
+		got, ok := claims["dept_path"].(string)
+		if !ok || got != dept {
+			t.Fatalf("dept_path 应原样是 %q，实际 %#v", dept, claims["dept_path"])
+		}
+		if got == besdk.NoDeptPath {
+			t.Fatalf("签发方不应写入哨兵 %q", besdk.NoDeptPath)
+		}
 	}
 }
