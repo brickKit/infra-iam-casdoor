@@ -5,8 +5,10 @@ package grpc
 
 import (
 	"context"
-	"fmt"
 	"sync/atomic"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	iamv1 "github.com/brickKit/infra-iam-casdoor/gen/infra/iam/v1"
 
@@ -19,12 +21,8 @@ import (
 // goroutine 里同时起步），gRPC server 构造那一刻登录可能还没完成。
 // 每次调用时才 Load()，比"构造时传一个可能还是 nil 的裸指针"更安全。
 //
-// ⚠️ 另一个已知简化：Casdoor 的管理 API 是会话 cookie 认证，理论上可能
-// 过期（多久过期未核实）；本组件目前没有做"401 时自动重新登录"的重试
-// 逻辑——会话一旦过期，BatchGetUsers 会开始报错，直到组件重启换一条
-// 新会话。这与已登录用户的应用 token 刷新（服务的是完全不同的一条
-// 会话）无关，只影响这一个内部只读查询接口，可接受的初版范围，需要时
-// 再补重连。
+// 管理会话 cookie 过期时，AdminClient 自己重新登录一次再重试（admin.go 的
+// call）；重试仍失败时 BatchGetUsers 回 Unavailable，不把出错的 sub 当成"查不到"。
 type server struct {
 	iamv1.UnimplementedIamServiceServer
 	admin   *atomic.Pointer[casdoor.AdminClient]
@@ -45,12 +43,16 @@ func New(admin *atomic.Pointer[casdoor.AdminClient], enabledComponents []string)
 func (s *server) BatchGetUsers(ctx context.Context, req *iamv1.BatchGetUsersRequest) (*iamv1.BatchGetUsersResponse, error) {
 	admin := s.admin.Load()
 	if admin == nil {
-		return nil, fmt.Errorf("Casdoor 管理会话尚未就绪")
+		return nil, status.Error(codes.Unavailable, "Casdoor 管理会话尚未就绪（启动时登录 Casdoor 失败或还没完成）")
 	}
 	users := make([]*iamv1.User, 0, len(req.Subs))
 	for _, sub := range req.Subs {
 		u, err := admin.GetUserBySub(ctx, sub)
-		if err != nil || u == nil {
+		if err != nil {
+			// Casdoor 出错不等于"查不到"：悄悄省略会让调用方以为这个人不存在。
+			return nil, status.Error(codes.Unavailable, "回源 Casdoor 查用户失败: "+err.Error())
+		}
+		if u == nil {
 			continue
 		}
 		pu := &iamv1.User{

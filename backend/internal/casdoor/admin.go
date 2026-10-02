@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,8 +38,20 @@ const (
 type AdminClient struct {
 	baseURL  string
 	username string // 也是 Casdoor 里 organization/application/webhook 等对象的 owner 字段
+	password string // 会话过期时重新登录用；只在内存里，不进日志
 	http     *http.Client
 }
+
+// requestTimeout 是每一次 Casdoor 管理 API 调用（含重新登录）的上限：Casdoor 卡住
+// 时，调用方（启动对账、gRPC BatchGetUsers）不至于一直挂着。
+const requestTimeout = 15 * time.Second
+
+// sessionExpiredMsg 是 Casdoor 对"没有有效管理会话"的回答（HTTP 200 +
+// status:error，真机核对过）。会话 cookie 会过期，遇到它就重新登录一次再重试。
+const sessionExpiredMsg = "Please login first"
+
+// errSessionExpired 在 do 里标出"会话过期"这一种错误，供 call 决定要不要重登。
+var errSessionExpired = errors.New("Casdoor 管理会话已过期")
 
 type apiResponse struct {
 	Status string          `json:"status"`
@@ -47,8 +60,8 @@ type apiResponse struct {
 }
 
 // NewAdminClient 登录一次，返回一条带会话 cookie 的客户端。登录失败
-// （Casdoor 暂时不可达、密码错误）返回 error——调用方（bootstrap 包）
-// 决定这是不是要阻断这一轮启动的自举尝试，本函数本身不重试。
+// （Casdoor 暂时不可达、密码错误）返回 error——调用方（module.Start）决定这一轮
+// 启动要不要跳过自举，本函数本身不重试。会话之后过期时，每次调用自己重新登录。
 func NewAdminClient(ctx context.Context, baseURL, username, password string) (*AdminClient, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
@@ -57,19 +70,28 @@ func NewAdminClient(ctx context.Context, baseURL, username, password string) (*A
 	c := &AdminClient{
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		username: username,
-		http:     &http.Client{Jar: jar, Timeout: 15 * time.Second},
+		password: password,
+		http:     &http.Client{Jar: jar, Timeout: requestTimeout},
 	}
-	if _, err := c.post(ctx, "/api/login", map[string]any{
-		"application":  builtInApp,
-		"organization": builtInOrg,
-		"username":     username,
-		"password":     password,
-		"autoSignin":   true,
-		"type":         "login",
-	}); err != nil {
-		return nil, fmt.Errorf("登录 Casdoor 管理 API 失败: %w", err)
+	if err := c.login(ctx); err != nil {
+		return nil, err
 	}
 	return c, nil
+}
+
+func (c *AdminClient) login(ctx context.Context) error {
+	_, err := c.once(ctx, http.MethodPost, "/api/login", nil, map[string]any{
+		"application":  builtInApp,
+		"organization": builtInOrg,
+		"username":     c.username,
+		"password":     c.password,
+		"autoSignin":   true,
+		"type":         "login",
+	})
+	if err != nil {
+		return fmt.Errorf("登录 Casdoor 管理 API 失败: %w", err)
+	}
+	return nil
 }
 
 // Username 是这条会话对应的 Casdoor 用户名——同时也是本组件创建的组织/
@@ -78,26 +100,45 @@ func NewAdminClient(ctx context.Context, baseURL, username, password string) (*A
 func (c *AdminClient) Username() string { return c.username }
 
 func (c *AdminClient) post(ctx context.Context, path string, body any) (json.RawMessage, error) {
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("序列化请求体失败: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(buf))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return c.do(req)
+	return c.call(ctx, http.MethodPost, path, nil, body)
 }
 
 func (c *AdminClient) get(ctx context.Context, path string, query url.Values) (json.RawMessage, error) {
+	return c.call(ctx, http.MethodGet, path, query, nil)
+}
+
+// call 发一次请求；Casdoor 回"会话过期"时重新登录一次、重试一次。重试仍失败就
+// 原样返回错误，不再循环。
+func (c *AdminClient) call(ctx context.Context, method, path string, query url.Values, body any) (json.RawMessage, error) {
+	data, err := c.once(ctx, method, path, query, body)
+	if !errors.Is(err, errSessionExpired) {
+		return data, err
+	}
+	if lerr := c.login(ctx); lerr != nil {
+		return nil, lerr
+	}
+	return c.once(ctx, method, path, query, body)
+}
+
+func (c *AdminClient) once(ctx context.Context, method, path string, query url.Values, body any) (json.RawMessage, error) {
 	u := c.baseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	var reader io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("序列化请求体失败: %w", err)
+		}
+		reader = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, reader)
 	if err != nil {
 		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	return c.do(req)
 }
@@ -113,13 +154,16 @@ func (c *AdminClient) do(req *http.Request) (json.RawMessage, error) {
 		return nil, fmt.Errorf("读取 Casdoor 响应失败: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Casdoor 返回 HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("Casdoor 返回 HTTP %d", resp.StatusCode)
 	}
 	var env apiResponse
 	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, fmt.Errorf("解析 Casdoor 响应失败: %w（body=%s）", err, string(body))
+		return nil, fmt.Errorf("解析 Casdoor 响应失败: %w", err)
 	}
 	if env.Status != "ok" {
+		if env.Msg == sessionExpiredMsg {
+			return nil, errSessionExpired
+		}
 		return nil, fmt.Errorf("Casdoor 返回错误: %s", env.Msg)
 	}
 	return env.Data, nil
