@@ -9,9 +9,7 @@ import (
 
 // TestThumbprint_对照RFC7638官方示例 用 IETF RFC 7638 Appendix A 给出的
 // 官方示例 JWK 与官方给出的期望 kid 值直接核对——不是自己造数据自己验，
-// 是对照标准文本里权威机构给出的已知正确答案（同项目里"读标准文本，
-// 不猜格式"的一贯做法，见 infra-iam-casdoor 设计计划 §8 对 RFC 8693 的
-// 引用态度）。
+// 是对照标准文本里给出的已知正确答案（读标准文本，不猜格式）。
 func TestThumbprint_对照RFC7638官方示例(t *testing.T) {
 	const n = "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw"
 	const e = "AQAB"

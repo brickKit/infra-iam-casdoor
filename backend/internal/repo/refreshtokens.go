@@ -21,11 +21,10 @@ func (r *Repo) IssueRefreshToken(ctx context.Context, jti, sub string, expiresAt
 }
 
 // RotateRefreshToken 是刷新路径的核心：验证旧 jti 仍然有效，撤销它，
-// 登记一个指向它的新行——三步在同一个事务里原子完成（设计计划 §3.3
-// "每次刷新轮换"）。
+// 登记一个指向它的新行——三步在同一个事务里原子完成（每次刷新都
+// 轮换）。
 //
-// ⚠️ 重放检测（设计上的加固，超出设计计划字面要求，但与 §14.1.6 的
-// rotation 语义天然一致，不需要新表）：如果 oldJTI 存在但**已经被撤销**
+// ⚠️ 重放检测（与 rotation 语义天然一致，不需要新表）：如果 oldJTI 存在但**已经被撤销**
 // （不管是登出撤销的还是之前一次轮换撤销的），说明有人拿着一个已经用
 // 过的 refresh token 在重放——这时不仅拒绝这次刷新，还要把这个 sub
 // 名下**全部**仍然有效的 refresh token 一并撤销，强制这个人重新走一遍
@@ -99,8 +98,7 @@ func (r *Repo) RotateRefreshToken(ctx context.Context, oldJTI, newJTI, sub strin
 }
 
 // RevokeRefreshToken 撤销一个 refresh token——幂等：不存在或已撤销都
-// 视为成功（设计计划 §3：登出对一个已经作废的 token 重复调用同样返回
-// 200）。sub 由调用方（service 层）传入并核对，防止用别人的 jti 登出
+// 视为成功（登出对一个已经作废的 token 重复调用同样返回 200）。sub 由调用方（service 层）传入并核对，防止用别人的 jti 登出
 // 别人的会话（jti 本身如果是随机生成的很难猜，但"防御纵深"这一步不
 // 依赖 jti 猜不中这个假设）。
 func (r *Repo) RevokeRefreshToken(ctx context.Context, jti, sub string) error {

@@ -1,6 +1,6 @@
 // Package grpc 实现 infra.iam.v1.IamService——本组件仅有的两个同步读
-// 接口（设计计划 §3：账密校验/MFA/token 签发刷新登出全部不在这份契约
-// 里，那些走 REST 或浏览器直连 Casdoor）。
+// 接口（账密校验/MFA/token 签发刷新登出全部不在这份契约里，那些走 REST
+// 或浏览器直连 Casdoor）。
 package grpc
 
 import (
@@ -33,10 +33,10 @@ func New(admin *atomic.Pointer[casdoor.AdminClient], enabledComponents []string)
 	return &server{admin: admin, enabled: enabledComponents}
 }
 
-// BatchGetUsers 逐个回源 Casdoor 查（§3.8 的 batchGet 惯例：省掉查不到
-// 的那一个，不报错——同 infra-authz 的 BatchGetRoles）。⚠️ 本组件不落
-// 一张 users 影子表，每次都是真实的 Casdoor API 调用（设计计划 §2 末尾：
-// "那等于把 slot:iam 的可替换性又焊死一次"）；Casdoor 没有暴露批量按
+// BatchGetUsers 逐个回源 Casdoor 查（batchGet 惯例：省掉查不到的那一个，
+// 不报错——同 infra-authz 的 BatchGetRoles）。⚠️ 本组件不落一张 users 影子
+// 表，每次都是真实的 Casdoor API 调用（影子表等于把 slot:iam 的可替换性又
+// 焊死一次）；Casdoor 没有暴露批量按
 // UUID 查用户的接口，这里的"批量"体现在**调用方**只需要一次 gRPC 往返
 // （防的是调用方的 N+1，不是本组件到 Casdoor 之间的 N+1——那一段是
 // admin 会话走内网，成本与用户体验无关）。

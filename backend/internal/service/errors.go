@@ -17,7 +17,6 @@ var ErrUnauthenticated = errors.New("凭据无效")
 var ErrUnavailable = errors.New("依赖尚未就绪")
 
 // ErrDependencyUnavailable：调用 infra-authz 的 ResolveClaims 失败
-// （网络问题、infra-authz 本身挂了）。设计计划 §5 明文的 fail-closed
-// 决策：签发这一步不留 claims 兜底缓存，宁可让这次登录/刷新失败，也
+// （网络问题、infra-authz 本身挂了）。fail-closed：签发这一步不留 claims 兜底缓存，宁可让这次登录/刷新失败，也
 // 不要签出一个带着过期角色的 token。
 var ErrDependencyUnavailable = errors.New("依赖服务不可用")

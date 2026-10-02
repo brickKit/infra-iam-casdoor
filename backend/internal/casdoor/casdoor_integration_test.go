@@ -14,12 +14,11 @@ import (
 	"time"
 )
 
-// 这份文件是真机集成测试：对着一个真实跑着的 Casdoor 容器（同
-// docs/design/infra-iam-casdoor.md §8/§9 记录的那次真机核对用的同一个
-// be-casdoor），完整走一遍"建组织 → 建应用 → 建用户 → 密码授权换
+// 这份文件是真机集成测试：对着一个真实跑着的 Casdoor 容器（本项目基础资源
+// 里的 be-casdoor），完整走一遍"建组织 → 建应用 → 建用户 → 密码授权换
 // token → 验签 → 建 webhook → 清理"。⚠️ 门禁/CI 环境没有这个容器时
-// 必须能跳过，不能把默认的 `go test ./...` 拖住——同 repo 层测试用
-// TEST_PG_DSN 的既有约定（infra-authz 的 repo_test.go）。
+// 必须能跳过，不能把默认的 `go test ./...` 拖住（没设 TEST_CASDOOR_BASE_URL
+// 就 SKIP）。
 //
 // 建的全部对象都用带时间戳的名字，并在 t.Cleanup 里删除，避免污染
 // 共享的开发环境 Casdoor 实例——这是本组件设计阶段调研时定下的纪律
@@ -120,8 +119,8 @@ func TestAdminClient与IDTokenVerifier_真机走一遍完整流程(t *testing.T)
 	// 从不调用这个端点，只是测试需要一个真实签发的 token）。
 	//
 	// ⚠️ 不能直接用上面 CreateApplication 建出来的 app：生产代码的
-	// grantTypes 里刻意不含 "password"（设计计划 §6.1——浏览器直连
-	// Casdoor 走 authorization_code，本组件不代理密码），真机测试踩出来
+	// grantTypes 里刻意不含 "password"（浏览器直连 Casdoor 走
+	// authorization_code，本组件不代理密码），真机测试踩出来
 	// 的报错原文是 "grant_type: password is not supported in this
 	// application"。这里单独建一个只给测试用的"能走密码授权"的应用，
 	// 不代表生产配置——生产应用永远不加 password 这个 grant type。
@@ -164,9 +163,8 @@ func TestAdminClient与IDTokenVerifier_真机走一遍完整流程(t *testing.T)
 	}
 
 	// 同一个用户再走一遍密码授权，两次拿到的 sub 必须相同——sub 是
-	// Casdoor 内部的用户 UUID，不会因为重新登录而改变（真机核对过，
-	// 见 docs/design/infra-iam-casdoor.md §9 第 2 条一带而过的调研记录；
-	// 这里在测试里把它钉成一条可回归的断言）。
+	// Casdoor 内部的用户 UUID，不会因为重新登录而改变（真机核对过；这里把它
+	// 钉成一条可回归的断言）。
 	idToken2 := passwordGrantIDToken(t, base, tokenApp.ClientID, tokenApp.ClientSecret, userName, "Passw0rd!")
 	sub2, err := v.Verify(idToken2)
 	if err != nil {

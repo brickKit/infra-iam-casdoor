@@ -1,9 +1,8 @@
-// Package bootstrap 是首次部署初始化：建 Casdoor 组织/应用/webhook
-// （设计计划 §1"首次部署初始化"、§9 第 5 条）。
+// Package bootstrap 是启动对账：确保 Casdoor 里有本组件要的组织、应用与
+// webhook，并与配置一致。
 //
-// ⚠️ 判据是"每次启动都对账"，不是"只跑一次"（§9 第 5 条的选择，理由
-// 同 erp-inventory 的 claim-first：单机测试测不出"跑了一半挂了"的中间
-// 态）——每一步都先查 Casdoor 里那个对象是否已经存在，存在就跳过创建，
+// ⚠️ 判据是"每次启动都对账"，不是"只跑一次"（单机测试测不出"跑了一半挂了"
+// 的中间态）——每一步都先查 Casdoor 里那个对象是否已经存在，存在就跳过创建，
 // 只把本地 bootstrap_state 补齐；不存在才创建。这比维护一个"哪一步做到
 // 哪"的状态机更简单，也天然幂等：不管上次跑到第几步就断电，下次启动
 // 重新走一遍三步，效果和从头跑一遍完全一样。
@@ -77,10 +76,9 @@ func ensureApplication(ctx context.Context, c *casdoor.AdminClient, r *repo.Repo
 			return fmt.Errorf("建完应用后查询失败: %w", err)
 		}
 	}
-	// clientId 记下来供以后前端配置 OIDC 客户端用（暂时没有消费方——本
-	// 阶段还没有前端，见 AGENTS.md）；clientSecret 不落库，登录流程本身
-	// 用不上它（浏览器直连 Casdoor 走 authorization_code，本组件从不
-	// 代表用户去换 token，见设计计划 §3.2）。
+	// clientId 记下来供前端配置 OIDC 客户端时查；clientSecret 不落库，登录流程
+	// 本身用不上它（浏览器直连 Casdoor 走 authorization_code，本组件从不代表
+	// 用户去换 token）。
 	detail, _ := json.Marshal(map[string]string{"clientId": app.ClientID})
 	return r.MarkBootstrapStepDone(ctx, "casdoor_app", detail)
 }

@@ -21,14 +21,9 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-// infra-authz/gen/infra/authz 是 infra-authz 真身发布的生成物契约包
-// （铁律六第二类白名单，设计书 §13.3），本组件直接 import——不再逐字
-// 复制一份放进自己仓库的 contracts/vendor/（那个目录已经清空删除）。
-//
-// 原因：本组件与 infra-authz 都被分进了 go-infra 外壳，vendored-contract
-// （逐字复制生成代码）一旦调用方和被调方编译进同一个进程会在 protobuf
-// 全局注册表撞车，Go 的 module system 没有别的办法去重，只能改成直接
-// import 真身（阶段四调研记录 04 §13 有完整推演+最小复现）。
+// infra-authz/gen/infra/authz 是 infra-authz 发布的契约包，直接 import，不复制
+// 生成代码：调用方与被调方进同一个外壳时，复制的那份会在 protobuf 全局注册表
+// 里与原件撞名，外壳启动即 panic。
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

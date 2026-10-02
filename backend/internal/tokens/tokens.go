@@ -110,7 +110,7 @@ func (iss *Issuer) sign(claims jwt.Claims) (string, error) {
 // 是给其余组件验**应用 token**用的，见 http 包的 jwks 端点）。
 //
 // ⚠️ keys 用 kid 区分现在这把签名钥匙与"上一把"（轮换期间旧 refresh
-// token 仍要能验，同应用 token 的双挂逻辑，设计计划 §3.3）。
+// token 仍要能验，同应用 token 的双挂逻辑）。
 type Verifier struct {
 	keys map[string]*rsa.PublicKey
 }

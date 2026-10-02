@@ -10,8 +10,8 @@ import (
 
 // BootstrapStep 是 bootstrap_state 一行的读出结果。Done 为 false 表示
 // 这一步还没做过或还没确认过——调用方（bootstrap 包）据此决定要不要
-// 重新跑一遍这一步的 Casdoor 管理 API 调用（设计计划 §9 第 5 条：
-// "每次启动都对账"，每一步都要能安全重跑）。
+// 重新跑一遍这一步的 Casdoor 管理 API 调用（"每次启动都对账"，每一步都
+// 要能安全重跑）。
 type BootstrapStep struct {
 	Done   bool
 	Detail json.RawMessage

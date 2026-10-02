@@ -57,8 +57,7 @@ func uniqueID(prefix string) string {
 	return prefix + "-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatInt(n, 10)
 }
 
-// TestRun_每一步都幂等可重跑 是设计计划 §9 第 5 条"每次启动都对账"的
-// 核心断言：跑两遍 Run，第二遍必须是纯粹的"发现已存在、跳过创建"，不
+// TestRun_每一步都幂等可重跑 是"每次启动都对账"的核心断言：跑两遍 Run，第二遍必须是纯粹的"发现已存在、跳过创建"，不
 // 报任何错误，也不会重复创建导致 Casdoor 那边出现重名冲突报错。
 func TestRun_每一步都幂等可重跑(t *testing.T) {
 	db := testDB(t)

@@ -93,8 +93,7 @@ type TokenPair struct {
 }
 
 // ExchangeToken 是 POST /api/iam/token 的核心：验 Casdoor 身份 token →
-// 现问 infra-authz 的 claims → 签应用 token + refresh token（设计计划
-// §3.2 第 ②③ 步）。
+// 现问 infra-authz 的 claims → 签应用 token + refresh token。
 func (s *Service) ExchangeToken(ctx context.Context, casdoorIDToken string) (*TokenPair, error) {
 	v := s.idVerifier.Load()
 	if v == nil {
@@ -138,8 +137,7 @@ func (s *Service) RefreshToken(ctx context.Context, oldRefreshToken string) (*To
 	return &TokenPair{AccessToken: accessToken, RefreshToken: newRefreshToken, ExpiresIn: expiresIn}, nil
 }
 
-// Logout 作废一个 refresh token——幂等（设计计划 §3：对已作废的 token
-// 重复调用同样成功）。sub 由调用方（http 层）从已验签的应用 token 里
+// Logout 作废一个 refresh token——幂等（对已作废的 token 重复调用同样成功）。sub 由调用方（http 层）从已验签的应用 token 里
 // 取——只能作废"自己"的 refresh token，不能凭一个 refresh token 字符串
 // 单方面作废别人的会话（service.go 顶部没有额外校验的原因：这条防线在
 // repo.RevokeRefreshToken 的 SQL WHERE 条件里，sub 不匹配时 UPDATE
@@ -147,7 +145,7 @@ func (s *Service) RefreshToken(ctx context.Context, oldRefreshToken string) (*To
 func (s *Service) Logout(ctx context.Context, refreshToken, callerSub string) error {
 	// refresh token 本身可能已经过期/格式错误——登出的意图无论如何都该
 	// 达成"这个 token 以后肯定用不了"，所以验签失败时不报错，直接按
-	// "没有可撤销的东西"处理，返回成功（同 §3 的幂等要求）。
+	// "没有可撤销的东西"处理，返回成功（登出是幂等的）。
 	_, jti, err := s.verifier.VerifyRefreshToken(refreshToken)
 	if err != nil {
 		return nil
@@ -175,7 +173,7 @@ func (s *Service) issueFor(ctx context.Context, sub string) (*TokenPair, error) 
 
 // signAccessTokenFor 现问 infra-authz 的 ResolveClaims 再签一个应用
 // token。⚠️ 这里用 besdk.SystemClient——不是绕过用户数据权限的那类误用
-// （导读第 21 条针对的是"转发调用者身份去查调用者自己该看到的数据"，
+// （SystemClient 的禁令针对的是"该转发调用者身份去查调用者自己该看到的数据"，
 // 而这里恰恰没有"调用者身份"可转发：这一刻调用者手上要么还没有任何
 // 应用身份（登录/刷新的意义就是把它签出来），要么正在被刷新，ctx 里从
 // 不存在一个已验签的 besdk.Claims（本组件的 REST 面除 /api/iam/logout
@@ -202,8 +200,8 @@ func (s *Service) signAccessTokenFor(ctx context.Context, sub string) (accessTok
 
 // HandleWebhookDelivery 登记一次投递（去重）并宽容解析 payload——校验
 // 共享密钥这一步已经在 http 层做完（那一步是"是不是 Casdoor 发的"，
-// 严格；这一步是"这条事件长什么样"，宽容，设计计划 §9 第 2 条：投递
-// 保证与 payload 形状未能在受限环境里完全核实，见 AGENTS.md）。
+// 严格；这一步是"这条事件长什么样"，宽容：Casdoor 的投递保证与 payload
+// 形状至今没有完全核实，见 docs/design.md 的未决问题）。
 //
 // dedupKey 由调用方（http 层）算好传入——算法本身（有没有稳定投递 ID、
 // 退化到内容哈希）是协议细节，不属于这一层的编排逻辑。action 从
@@ -211,7 +209,7 @@ func (s *Service) signAccessTokenFor(ctx context.Context, sub string) (accessTok
 //
 // ⚠️ 解析（这个函数）与登记+发布（RecordDeliveryAndPublish）分成两段：
 // 解析不需要数据库，先做完再决定 status/errMsg 与要不要发事件；登记
-// 与发布必须在同一个事务里（Outbox Pattern，设计计划 §3.10），交给
+// 与发布必须在同一个事务里（Outbox Pattern），交给
 // repo 层的 RecordDeliveryAndPublish 一次做完。
 func (s *Service) HandleWebhookDelivery(ctx context.Context, dedupKey string, rawPayload []byte) error {
 	var payload webhookUserPayload

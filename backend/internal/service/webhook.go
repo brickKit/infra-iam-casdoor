@@ -9,8 +9,7 @@ import (
 
 // webhookUserPayload 宽容解析 Casdoor 的 webhook 投递体。
 //
-// ⚠️ 诚实的现状（设计计划 §9 第 2 条、AGENTS.md 已知缺口）：本次调研
-// 确认了 Casdoor 的 webhook **支持自定义 header**（共享密钥校验的
+// ⚠️ 诚实的现状（docs/design.md 的未决问题）：已经确认了 Casdoor 的 webhook **支持自定义 header**（共享密钥校验的
 // 前提），但**没能在真机上实际触发并抓到一条用户增删改事件的真实
 // payload**——自助注册需要短信/邮箱验证码，受限环境走不通；管理 API
 // 建用户在真机测试里没有观察到 webhook 被调用。所以这里的字段候选是
@@ -72,7 +71,7 @@ func (p webhookUserPayload) userFields() casdoorUserFields {
 }
 
 // EventSubject 把 Casdoor 的 action 名映射成本组件的事件 subject
-// （设计计划 §4）。action 的确切取值集合同样未经真机核对，这里覆盖
+// （infra.iam.user.created/updated/disabled.v1）。action 的确切取值集合同样未经真机核对，这里覆盖
 // Casdoor 源码里能看到的几个明显候选，认不出的 action 返回 ok=false，
 // 调用方标 IGNORED 而不是瞎猜发一条。
 func (p webhookUserPayload) EventSubject(action string) (subject string, ok bool) {
@@ -100,8 +99,8 @@ type userEventPayload struct {
 }
 
 // buildUserEvent 组出 besdk.Event。⚠️ version 用签名时刻的 unix 纳秒——
-// 本组件刻意不存用户表（设计计划 §2 末尾），没有一个天然的行版本号可
-// 用；纳秒时间戳满足"严格单调递增"这个契约要求（决策 43），代价是它
+// 本组件刻意不存用户表，没有一个天然的行版本号可用；纳秒时间戳满足
+// "严格单调递增"这个契约要求（消费者只在严格大于本地值时更新），代价是它
 // 不是一个有业务含义的版本号，但下游（infra-notification）只用它做
 // "谁更新"判断，不需要可读性。
 func buildUserEvent(subject string, p webhookUserPayload) (besdk.Event, error) {

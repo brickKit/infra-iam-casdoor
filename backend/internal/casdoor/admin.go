@@ -2,8 +2,7 @@
 // ① 管理 API（会话 cookie 认证，供首次初始化建组织/应用/webhook 用，
 // admin.go）；② OIDC 发现 + JWKS 验签（验浏览器换来的身份 token，
 // discovery.go/idtoken.go）。除此之外本组件不碰 Casdoor 的任何东西——
-// 认证流、用户资料、密码全部在 Casdoor 自己的界面里完成（设计计划
-// §1、§6.1）。
+// 认证流、用户资料、密码全部在 Casdoor 自己的界面里完成。
 package casdoor
 
 import (
@@ -214,7 +213,7 @@ type User struct {
 	DisplayName string `json:"displayName"`
 	Email       string `json:"email"`
 	Phone       string `json:"phone"`
-	Dingtalk    string `json:"dingtalk"` // 阶段三 Task 9 起可能非空，见设计计划 §9 第 3 条
+	Dingtalk    string `json:"dingtalk"` // 用户在 Casdoor 绑定了钉钉才有值，否则为空
 }
 
 // GetUserBySub 按 sub（Casdoor 内部 UUID）查用户——真机核对过
@@ -262,8 +261,8 @@ func (c *AdminClient) GetApplication(ctx context.Context, name string) (*Applica
 }
 
 // CreateApplication 建一个 OIDC 应用，登录页/客户端配置都挂在它上面
-// （设计计划 §1.1：账密 + 微信 + QQ + Google 四种方式全在 Casdoor 侧对
-// 这个应用配置，本组件零代码）。grantTypes 里的
+// （账密、微信、QQ、Google 等登录方式全在 Casdoor 侧对这个应用配置，
+// 本组件零代码）。grantTypes 里的
 // urn:ietf:params:oauth:grant-type:token-exchange 目前用不上（本组件走
 // 的是"拿身份 token 自己验签"而不是标准 OIDC token exchange 端点），但
 // 保留它不影响功能，方便以后有需要时不用回来改应用配置。
@@ -275,7 +274,7 @@ func (c *AdminClient) CreateApplication(ctx context.Context, name, organization 
 		"organization":         organization,
 		"cert":                 "cert-built-in",
 		"enablePassword":       true,
-		"enableSignUp":         true, // 设计计划 §1.1："自助注册开放"
+		"enableSignUp":         true, // 自助注册开放
 		"redirectUris":         redirectURIs,
 		"grantTypes":           []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"},
 		"tokenFormat":          "JWT",

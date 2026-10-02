@@ -32,7 +32,7 @@ func RegisterRoutes(eng *gin.Engine, svc *service.Service) {
 	// webhook 路由的"校验"不是权限键——besdk.Public 只是"不走进程内
 	// bundle map 查找"，真正的校验（比对共享密钥 header）在
 	// casdoorWebhookHandler 内部做。⚠️ 必须仍然经 besdk.POST 注册
-	// （不许裸用 eng.POST，导读第 23 条）——这里不是"权限键场景不适用
+	// （不许裸用 eng.POST：make gates 的 bare-route-scan 查它）——这里不是"权限键场景不适用
 	// 就绕过 SDK 封装"，而是"这条路由的校验方式不是权限键，但依然要
 	// 走统一注册入口"。
 	besdk.POST(eng, "/api/iam/webhooks/casdoor", besdk.Public, casdoorWebhookHandler(svc))
@@ -158,8 +158,8 @@ func casdoorWebhookHandler(svc *service.Service) gin.HandlerFunc {
 	}
 }
 
-// dedupKeyFor 退化成内容哈希——Casdoor 有没有稳定的投递 ID 未能在本次
-// 调研里确认（设计计划 §9 第 2 条、AGENTS.md 已知缺口），内容哈希是
+// dedupKeyFor 退化成内容哈希——Casdoor 有没有稳定的投递 ID 至今没有核实
+// （docs/design.md 的未决问题），内容哈希是
 // 唯一不依赖那个假设的去重键：同一条投递内容重投两次会算出同一个哈希，
 // 天然去重；代价是"同一个用户在同一秒发生了两次内容完全相同的变更"这
 // 种极小概率场景会被误判成重投而漏发一条——可接受，见调用处注释。

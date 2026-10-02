@@ -1,7 +1,7 @@
-// Package consumer 消费唯一一条订阅：infra.authz.user_role.changed.v1
-// （设计计划 §4）——只在"踢人"（change_type: kicked）时作废该用户的
-// refresh token，普通的角色增减/到期不触碰 refresh token（下次刷新
-// 自然拿到新角色，设计计划 §4 的明文警告）。
+// Package consumer 消费唯一一条订阅：infra.authz.user_role.changed.v1——
+// 只在"踢人"（change_type: kicked）时作废该用户的 refresh token；普通的
+// 角色增减/到期不触碰 refresh token（下次刷新自然拿到新角色；顺手作废会把
+// 每次调整角色都变成全员重新登录）。
 package consumer
 
 import (
@@ -44,7 +44,7 @@ func userRoleChangedHandler(logger *slog.Logger) func(context.Context, *sql.Tx, 
 		}
 		if p.ChangeType != "kicked" {
 			// 普通角色增减/到期：不动 refresh token，下次刷新自然拿到
-			// 新角色（设计计划 §4 的明文要求）。
+			// 新角色。
 			return nil
 		}
 		if p.Sub == "" {

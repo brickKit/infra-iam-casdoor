@@ -1,7 +1,7 @@
 // Package keys 只做一件事：把 configSchema 注入的 PEM 文本解析成
 // crypto/rsa 的 Go 类型，并按 RFC 7638 算出确定性的 kid（JWK
 // Thumbprint）——同一把公钥每次启动都算出同一个 kid，这是
-// UpsertSigningKey 能安全幂等调用的前提（设计计划 §3.3、§9 第 1b 条）。
+// UpsertSigningKey 能安全幂等调用的前提。
 //
 // ⚠️ 私钥材料只在这个包和调用它的 tokens 包里短暂存在于内存，绝不落库
 // （见 repo/signingkeys.go 顶部注释）、绝不打进日志。
@@ -63,7 +63,7 @@ func ParsePublicKeyPEM(pemText string) (*rsa.PublicKey, error) {
 	return rsaPub, nil
 }
 
-// jwkThumbprintInput 的字段顺序与命名必须严格按 RFC 7638 §3.2：RSA 公钥
+// jwkThumbprintInput 的字段顺序与命名必须严格按 RFC 7638 第 3.2 节：RSA 公钥
 // 只取 e/kty/n 三个必需成员，键名按字典序排列，序列化成没有空白的紧凑
 // JSON 后取 SHA-256。golang 的 encoding/json 按 struct 字段声明顺序
 // （不是字母序）输出，所以这里手写字段顺序为 e, kty, n——凑巧字母序与
@@ -75,8 +75,8 @@ type jwkThumbprintInput struct {
 }
 
 // Thumbprint 按 RFC 7638 算 RSA 公钥的 kid。⚠️ 用的是 base64url **不带
-// padding**（RFC 7638 §3.1 要求 JWK 序列化用 base64url-encode，JWK 规范
-// RFC 7518 §6.3.1 规定 n/e 不带 padding）——用带 padding 的
+// padding**（RFC 7638 第 3.1 节要求 JWK 序列化用 base64url-encode，JWK 规范
+// RFC 7518 第 6.3.1 节规定 n/e 不带 padding）——用带 padding 的
 // StdEncoding/URLEncoding 会算出与其他任何标准实现都对不上的 kid。
 func Thumbprint(pub *rsa.PublicKey) string {
 	in := jwkThumbprintInput{
