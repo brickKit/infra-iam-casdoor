@@ -277,6 +277,7 @@ func TestLogout_伪造的refreshToken不报错(t *testing.T) {
 func TestHandleWebhookDelivery_合法payload发布事件(t *testing.T) {
 	svc, _ := newTestService(t)
 	sub := uniqueID("casdoor-uuid")
+	withUsers(svc).put(casdoor.User{ID: sub, DisplayName: "张三", Email: "a@b.com"})
 	payload := fmt.Sprintf(`{"action":"add-user","object":{"id":%q,"displayName":"张三","email":"a@b.com"}}`, sub)
 
 	if err := svc.HandleWebhookDelivery(context.Background(), uniqueID("dedup"), []byte(payload)); err != nil {

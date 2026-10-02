@@ -34,10 +34,18 @@ type Service struct {
 	issuer       *tokens.Issuer
 	verifier     *tokens.Verifier
 	idVerifier   atomic.Pointer[casdoor.IDTokenVerifier]
-	jwkSet       []keys.JWK // 当前 + 上一把公钥，启动时算好，不随请求变化
-	enabled      []string   // ENABLED_COMPONENTS 拆分结果
-	sharedSecret string     // webhook 共享密钥
-	sharedHeader string     // 共享密钥所在的 header 名
+	jwkSet       []keys.JWK        // 当前 + 上一把公钥，启动时算好，不随请求变化
+	enabled      []string          // ENABLED_COMPONENTS 拆分结果
+	sharedSecret string            // webhook 共享密钥
+	sharedHeader string            // 共享密钥所在的 header 名
+	users        func() UserReader // webhook 回读用户当前状态用；返回 nil = Casdoor 管理会话还没就绪
+}
+
+// UserReader 是 webhook 投递回读用户当前状态用的 Casdoor 查询，*casdoor.AdminClient
+// 满足它。查不到用户返回 (nil, nil)。
+type UserReader interface {
+	GetUserBySub(ctx context.Context, sub string) (*casdoor.User, error)
+	GetUserByName(ctx context.Context, owner, name string) (*casdoor.User, error)
 }
 
 // New 构造 Service。currentPub/currentKid 恒非空（APP_TOKEN_SIGNING_KEY_PEM
@@ -68,6 +76,10 @@ func New(r *repo.Repo, cfg besdk.Config, schema string, signingKey *rsa.PrivateK
 // SetIDVerifier 由 module 的后台发现循环在 OIDC 发现成功后调用一次
 // （允许晚于 New 若干秒——Casdoor 可能比本组件启动得晚）。
 func (s *Service) SetIDVerifier(v *casdoor.IDTokenVerifier) { s.idVerifier.Store(v) }
+
+// SetUserReader 由 module 在构造后调用一次：f 每次投递时调用，返回当前的 Casdoor
+// 管理会话（后台登录成功之前返回 nil）。
+func (s *Service) SetUserReader(f func() UserReader) { s.users = f }
 
 // JWKS 供 GET /.well-known/jwks.json 直接序列化。
 func (s *Service) JWKS() []keys.JWK { return s.jwkSet }

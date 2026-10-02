@@ -4,8 +4,60 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
+
+	"github.com/brickKit/infra-iam-casdoor/v2/backend/internal/casdoor"
 )
+
+// fakeUsers 是 Casdoor 用户查询的替身：测试直接改它里面的"Casdoor 当前状态"。
+// afterRead 非空时在每次 GetUserBySub 读完状态、返回之前调用（并发测试用它让
+// 一次回读停在中间）。
+type fakeUsers struct {
+	mu        sync.Mutex
+	bySub     map[string]casdoor.User
+	reads     int
+	afterRead func(n int)
+}
+
+func newFakeUsers() *fakeUsers { return &fakeUsers{bySub: map[string]casdoor.User{}} }
+
+func (f *fakeUsers) put(u casdoor.User) { f.mu.Lock(); f.bySub[u.ID] = u; f.mu.Unlock() }
+func (f *fakeUsers) remove(sub string)  { f.mu.Lock(); delete(f.bySub, sub); f.mu.Unlock() }
+
+func (f *fakeUsers) GetUserBySub(_ context.Context, sub string) (*casdoor.User, error) {
+	f.mu.Lock()
+	f.reads++
+	n := f.reads
+	u, ok := f.bySub[sub]
+	hook := f.afterRead
+	f.mu.Unlock()
+	if hook != nil {
+		hook(n)
+	}
+	if !ok {
+		return nil, nil
+	}
+	return &u, nil
+}
+
+func (f *fakeUsers) GetUserByName(_ context.Context, owner, name string) (*casdoor.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.bySub {
+		if u.Owner == owner && u.Name == name {
+			return &u, nil
+		}
+	}
+	return nil, nil
+}
+
+// withUsers 把替身接到 svc 上，返回替身供测试改"Casdoor 当前状态"。
+func withUsers(svc *Service) *fakeUsers {
+	f := newFakeUsers()
+	svc.SetUserReader(func() UserReader { return f })
+	return f
+}
 
 // casdoorRecordPayload 按 2026-10-02 真机抓到的 Casdoor webhook 投递体拼出来：
 // 投递体就是 Casdoor 的 Record 对象，object 是**被 JSON 编码成字符串**的请求体
@@ -59,6 +111,7 @@ func TestHandleWebhookDelivery_真机形状的update_user标PROCESSED并写进ou
 	ctx := context.Background()
 	sub := uniqueID("casdoor-uuid")
 	dedup := uniqueID("dedup")
+	withUsers(svc).put(casdoor.User{ID: sub, Owner: "brickkit", Name: "dev.finance.viewer", DisplayName: "张三", Email: "a@b.com"})
 
 	if err := svc.HandleWebhookDelivery(ctx, dedup, casdoorRecordPayload(t, "update-user", sub, "张三", "a@b.com")); err != nil {
 		t.Fatalf("处理失败：%v", err)

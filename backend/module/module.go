@@ -45,6 +45,14 @@ func New(ctx context.Context, rt *besdk.Runtime) (*besdk.Module, error) {
 	// 时才 Load()——见 grpc.go 顶部注释，RegisterGRPC 与 Start() 是并发
 	// 起步的两件事，构造这一刻登录多半还没完成。
 	var adminClientHolder atomic.Pointer[casdoor.AdminClient]
+	// webhook 投递回读用户当前状态用的也是这条会话（R61）。⚠️ 没登录时必须返回
+	// nil 接口，不能把 nil 的 *AdminClient 装进接口（那是一个非 nil 的接口值）。
+	svc.SetUserReader(func() service.UserReader {
+		if c := adminClientHolder.Load(); c != nil {
+			return c
+		}
+		return nil
+	})
 
 	return &besdk.Module{
 		HTTPHandler: eng,
