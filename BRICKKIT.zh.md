@@ -43,7 +43,7 @@ Casdoor 本身不是依赖：它是项目之外的资源，经 `CASDOOR_BASE_URL
 | `PG_HOST` | PostgreSQL 主机。一般写项目共享值（`$var:PG_HOST`）。 |
 | `PG_PORT` | PostgreSQL 端口；默认 `5432`。 |
 | `PG_DATABASE` | `PG_SCHEMA` 那个 schema 所在的库（`$var:PG_DATABASE`）。 |
-| `PG_USER` | 组件的角色，名字随意（BrickEnterprise 项目里是 `infra_iam_casdoor_rw`）。单跑时组件以它登录。每个事务都切到它（`SET LOCAL ROLE`），所以在外壳里（外壳以自己的角色登录）这个成员的 `PG_USER` 仍是它的事务所用的角色，外壳的角色必须能切到它。 |
+| `PG_USER` | 组件的角色，名字随意（BrickEnterprise 项目里是 `infra_iam_casdoor_rw`）。单跑时组件以它登录。本组件的每个事务都切到它（`SET LOCAL ROLE`），所以在外壳里（外壳以自己的角色登录）这个成员的 `PG_USER` 仍是它的事务所用的角色。SDK 的 outbox 泵不切角色：它以外壳的登录角色读 outbox。所以外壳的登录角色必须被授予这个角色并带 INHERIT，例如一条普通的 `GRANT <PG_USER> TO <外壳登录角色>`；只能 `SET ROLE` 到它不够，没有 INHERIT 时事件一条也发不出去。 |
 | `PG_PASSWORD` | `PG_USER` 的密码。密钥：写 `${INFRA_IAM_CASDOOR_DB_PASSWORD}`（或你的密钥库引用），不写值本身。 |
 | `PG_SCHEMA` | 全部表、outbox 与迁移状态表（`schema_migrations_<PG_SCHEMA>`）所在的 schema；默认 `infra_iam_casdoor`。任何合法的名字都行；照样写出字面量。 |
 | `NATS_URL` | outbox 推送发往、消费者读取的 NATS（`$var:NATS_URL`）。 |
@@ -66,7 +66,7 @@ Casdoor 本身不是依赖：它是项目之外的资源，经 `CASDOOR_BASE_URL
 ## 契约索引
 
 - `contracts/infra/iam/v1/iam.proto` — gRPC `infra.iam.v1.IamService`，IAM 族的契约（名字里不带 Casdoor，换一个 IAM 实现也能原样提供）：`BatchGetUsers`（sub 列表 → 显示名、邮箱、手机号、IM 账号；每次调用都回源 Casdoor，查不到的 sub 省略；Casdoor 管理会话未就绪或 Casdoor 出错时回 `UNAVAILABLE`）与 `GetTenantFeatures`（与 REST 路由同一份清单）。Go 包是独立模块 `github.com/brickKit/infra-iam-casdoor/gen/infra/iam`。
-- `contracts/iam.openapi.yaml` — REST，路径是 IAM 族共用的固定路径。都不需要权限键：本组件就是"还没有身份"与"有身份"之间的那道门。`POST /api/iam/token`（公开；请求体不对 `400`，Casdoor token 无效、不是签给可信应用的、或这个人在 Casdoor 里已停用 `401`，Casdoor 或 authz 不可达、或还不知道应用的 client ID `503`）、`POST /api/iam/token/refresh`（公开；refresh token 无效、已作废、已过期或被重放 `401`，包括会话已到终点、这个人在 Casdoor 里已停用，authz 不可达 `503`）、`POST /api/iam/logout`（需登录；幂等）、`GET /.well-known/jwks.json`（公开；给其余组件，不经网关）、`GET /api/tenant/features`（公开；前端登录前就要读）、`POST /api/iam/webhooks/casdoor`（公开路由，靠共享密钥 header 认证；投递登记下来就回 `200`，不管这一刻读不读得到 Casdoor；`503` 仍在契约里声明，但这个版本不再返回；只给 Casdoor，不经网关）。
+- `contracts/iam.openapi.yaml` — REST，路径是 IAM 族共用的固定路径。都不需要权限键：本组件就是"还没有身份"与"有身份"之间的那道门。`POST /api/iam/token`（公开；请求体不对 `400`，Casdoor token 无效、不是签给可信应用的、或这个人在 Casdoor 里已停用 `401`，Casdoor 或 authz 不可达、或还不知道应用的 client ID `503`）、`POST /api/iam/token/refresh`（公开；refresh token 无效、已作废、已过期或被重放 `401`，包括会话已到终点、这个人在 Casdoor 里已停用，authz 不可达 `503`）、`POST /api/iam/logout`（需登录；幂等）、`GET /.well-known/jwks.json`（公开；给其余组件，不经网关）、`GET /api/tenant/features`（公开；前端登录前就要读）、`POST /api/iam/webhooks/casdoor`（公开路由，靠共享密钥 header 认证；投递登记下来就回 `200`，不管这一刻读不读得到 Casdoor；只给 Casdoor，不经网关）。
 - `contracts/events/iam.events.json` — 经 outbox 发布：`infra.iam.user.created.v1`、`infra.iam.user.updated.v1`（带只增不减的 `version`）、`infra.iam.user.disabled.v1`（删除或停用用户也发这条；同一个事务里作废这个人全部 refresh token）。每条事件带的是处理投递那一刻 Casdoor 里这个人的状态（经管理 API 回读），所以投递乱序到达时下游留下的仍是最新状态；`version` 每人严格递增。投递由后台循环从队列里处理：读不了 Casdoor 时在队列里等，读得到了再发；Casdoor 对某条投递一直出错的，试满 10 次标 `FAILED`，记一条 Warn。只带 owner 与 name 的投递经 Casdoor 找到这个人；用最小请求体 `delete-user` 一个本组件从没为他发过事件的人，存成 `IGNORED`。Casdoor 大约每 30 秒成批发一次 webhook，发送失败不重投，所以本组件停着期间的变化不会被桥接（这期间被重新启用的人，在 Casdoor 里下一次改动他之前登录不了；随便改一下就行）。`infra.iam.login.v1` 已声明、尚未发布。消费：`infra.authz.user_role.changed.v1`，`change_type: kicked` 时作废这个人名下全部 refresh token；其余变化不动 refresh token，下次刷新自然拿到新角色。
 - `assembly.yaml` — 本项目的元数据：换 token、刷新、登出、features 四条网关路由；没有权限键、没有菜单；schema 与角色；`data_scopes: none`。
 

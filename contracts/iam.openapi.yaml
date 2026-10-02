@@ -164,8 +164,6 @@ paths:
           description: 已登记（去重；不代表事件已经发出——用户变更由后台队列回读 Casdoor 后经 Outbox 发布）
         "401":
           description: 共享密钥校验失败
-        "503":
-          description: 本组件不再返回这个状态，保留声明只因契约只增。读不回 Casdoor（管理会话还没就绪、Casdoor 不可达或出错）时投递照样登记、回 200，在队列里等 Casdoor 回来；登记本身失败（数据库不可用）回 500
 
 components:
   securitySchemes:
