@@ -1,5 +1,5 @@
 // Package tokens 签发与验证本组件自己的两种 JWT：应用 token（带
-// roles[]/dept_path/org_id，供其余组件用各自的 iamJwksUrl 验签）与
+// roles[]/dept_path/org_id，供其余组件用各自的 IAM_JWKS_URL 验签）与
 // refresh token（只在本组件内部消费，不对外暴露验签面）。
 //
 // ⚠️ 这两种 token 用同一把私钥签，但绝不能互相冒充——refresh token 带一个

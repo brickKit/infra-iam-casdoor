@@ -161,7 +161,7 @@ func TestVerifyRefreshToken_轮换窗口内旧公钥仍能验签(t *testing.T) {
 
 // TestVerifyRefreshToken_旧公钥从Verifier移除后拒绝 确认"旧钥匙不是
 // 永久保留"——一旦调用方在下一次重启时不再传入 previous（运维清空了
-// appTokenPreviousPublicKeyPem），用它签的 token 就该验签失败，不是
+// APP_TOKEN_PREVIOUS_PUBLIC_KEY_PEM），用它签的 token 就该验签失败，不是
 // 无限期有效。
 func TestVerifyRefreshToken_旧公钥从Verifier移除后拒绝(t *testing.T) {
 	oldPriv, oldKid := testKey(t)

@@ -24,7 +24,7 @@ import (
 // 对象，内置管理员账号挂在这个组织下（真机核对过：docker 起一个全新
 // be-casdoor 容器，未做任何配置就能用 admin/123 登录 built-in/app-built-in）。
 // 管理 API 走会话 cookie 认证，登录用的正是这一对，与本组件之后要建的
-// casdoorOrgName/casdoorAppName（给真实用户登录用）完全是两码事。
+// CASDOOR_ORG_NAME / CASDOOR_APP_NAME（给真实用户登录用）完全是两码事。
 const (
 	builtInOrg = "built-in"
 	builtInApp = "app-built-in"

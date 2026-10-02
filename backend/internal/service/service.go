@@ -75,9 +75,8 @@ func (s *Service) JWKS() []keys.JWK { return s.jwkSet }
 // EnabledComponents 供 GET /api/tenant/features。
 func (s *Service) EnabledComponents() []string { return s.enabled }
 
-// WebhookSharedSecretHeader 供 HTTP 层的校验中间件读——header 名本身也
-// 是配置项（configSchema 的 webhookSharedSecret 与「放在哪个 header」
-// 是两件事，见 http 包）。
+// WebhookSharedSecretHeader 供 HTTP 层校验时读：密钥值来自 WEBHOOK_SHARED_SECRET，
+// header 名是 module 包的固定常量（启动对账建 webhook 时用的也是它）。
 func (s *Service) WebhookSharedSecretHeader() string { return s.sharedHeader }
 func (s *Service) WebhookSharedSecretValid(v string) bool {
 	// 常数时间比较：这个端点经 expose 的宿主机端口可达，逐字节提前返回的比较

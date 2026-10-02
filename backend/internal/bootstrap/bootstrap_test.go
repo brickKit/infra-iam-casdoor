@@ -150,7 +150,7 @@ func TestRun_webhookCallbackURL为空时跳过webhook步骤(t *testing.T) {
 		t.Fatalf("组织应该照样建成：exists=%v, err=%v", exists, err)
 	}
 	if step, err := r.GetBootstrapStep(ctx, "casdoor_webhook"); err != nil || step.Done {
-		t.Fatalf("webhookCallbackUrl 为空时 casdoor_webhook 不该被标记完成：%+v, err=%v", step, err)
+		t.Fatalf("WEBHOOK_CALLBACK_URL 为空时 casdoor_webhook 不该被标记完成：%+v, err=%v", step, err)
 	}
 }
 
