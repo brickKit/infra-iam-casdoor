@@ -182,17 +182,14 @@ func TestExchangeToken_签名被篡改返回Unauthenticated(t *testing.T) {
 // → 登出——全部对着真实基础设施（真实 Postgres + 真实跑着的 infra-authz
 // 容器），不用任何 mock。
 //
-// ⚠️ 需要显式设置 TEST_INFRA_AUTHZ_GRPC_ENDPOINT（比如
-// `http://<容器IP>:9223`）——infra-authz 的 gRPC 端口默认不映射到宿主
-// 机（同 erp-sales 当初记录的"gRPC 端口只能走容器 Docker 网络 IP"这条
-// 限制），本机可以用 `docker inspect <容器名> --format
-// '{{json .NetworkSettings.Networks}}'` 拿到容器 IP，Docker 默认桥接
-// 网络允许宿主机直接连容器内部端口，不需要显式 publish。CI/别人的机器
-// 上没有这个环境变量时跳过，不阻塞默认的 `go test ./...`。
+// ⚠️ 需要 INFRA_AUTHZ_GRPC_ENDPOINT（如 `http://localhost:20223`）指向一个
+// 真实在跑的 infra-authz 的 gRPC 端口——项目根的 `make test-cross
+// ID=infra/iam-casdoor` 起转发器并注入这个变量（变量名就是平台注入依赖地址
+// 用的那个）。没设时跳过，不阻塞 `make test`。
 func TestExchangeTokenAndRefreshToken_端到端对着真实infra_authz走一遍(t *testing.T) {
-	endpoint := os.Getenv("TEST_INFRA_AUTHZ_GRPC_ENDPOINT")
+	endpoint := os.Getenv("INFRA_AUTHZ_GRPC_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("未设置 TEST_INFRA_AUTHZ_GRPC_ENDPOINT，跳过端到端测试")
+		t.Skip("未设置 INFRA_AUTHZ_GRPC_ENDPOINT（make test-cross 注入），跳过端到端测试")
 	}
 	svc, _ := newTestServiceWithConfig(t, besdk.NewConfig(map[string]string{
 		"INFRA_AUTHZ_GRPC_ENDPOINT": endpoint, // besdk.SystemClient 从 Config 读依赖地址

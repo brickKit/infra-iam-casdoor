@@ -129,12 +129,13 @@ func assertBootstrapped(t *testing.T, ctx context.Context, c *casdoor.AdminClien
 // 不是各自隔离的 fixture，这是第一版忘了清理时真的踩出来的）。
 func TestRun_webhookCallbackURL为空时跳过webhook步骤(t *testing.T) {
 	db := testDB(t)
-	if _, err := db.ExecContext(context.Background(), `DELETE FROM bootstrap_state WHERE step = 'casdoor_webhook'`); err != nil {
-		t.Fatalf("清理 bootstrap_state 失败：%v", err)
-	}
 	r := repo.New(db, "infra_iam_casdoor_rw", "infra_iam_casdoor")
 	c := testAdminClient(t)
 	ctx := context.Background()
+	// 表名带 schema：TEST_PG_DSN 不带 search_path，连接默认落在 public。
+	if _, err := db.ExecContext(ctx, `DELETE FROM infra_iam_casdoor.bootstrap_state WHERE step = 'casdoor_webhook'`); err != nil {
+		t.Fatalf("清理 bootstrap_state 失败：%v", err)
+	}
 
 	orgName := uniqueID("bootstraptest-org")
 	appName := uniqueID("bootstraptest-app")
