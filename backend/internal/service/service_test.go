@@ -300,14 +300,23 @@ func TestLogout_伪造的refreshToken不报错(t *testing.T) {
 
 // ── HandleWebhookDelivery：完全不需要 infra-authz/Casdoor ────────────
 
+// add-user 投递（object 是 JSON 对象的形式）处理完：投递 PROCESSED，outbox 里有一条
+// created，字段来自 Casdoor 的当前状态。只断言"没报错"的话，什么都没发也是绿的。
 func TestHandleWebhookDelivery_合法payload发布事件(t *testing.T) {
 	svc, _ := newTestService(t)
+	db := testDB(t)
 	sub := uniqueID("casdoor-uuid")
 	withUsers(svc).put(casdoor.User{ID: sub, DisplayName: "张三", Email: "a@b.com"})
 	payload := fmt.Sprintf(`{"action":"add-user","object":{"id":%q,"displayName":"张三","email":"a@b.com"}}`, sub)
 
-	if err := svc.HandleWebhookDelivery(context.Background(), uniqueID("dedup"), []byte(payload)); err != nil {
-		t.Fatalf("处理失败：%v", err)
+	dedup := deliver(t, svc, []byte(payload))
+	if status, msg := deliveryStatus(t, db, dedup); status != "PROCESSED" {
+		t.Fatalf("投递状态 %s（%s），期望 PROCESSED", status, msg)
+	}
+	ev, ok := downstreamView(t, db, sub)
+	if !ok || ev.Subject != "infra.iam.user.created.v1" || ev.Payload.Sub != sub ||
+		ev.Payload.DisplayName != "张三" || ev.Payload.Email != "a@b.com" {
+		t.Fatalf("期望一条 created、字段来自回读，实际 %+v（有事件=%v）", ev, ok)
 	}
 }
 
