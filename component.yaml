@@ -1,0 +1,190 @@
+apiVersion: brickkit/v1
+kind: Component
+
+metadata:
+  id: infra/iam-casdoor
+  name: Identity (Casdoor)
+  version: 3.0.0
+  description: "The identity member in front of Casdoor: browser login with PKCE and a server-side session, short access tokens it signs for the platform principal, its public keys; a development-only password exchange (A101)"
+  repository: https://github.com/brickKit/infra-iam-casdoor
+
+deployment:
+  type: container
+  build:
+    context: .
+    dockerfile: Dockerfile
+  port: 8200
+
+healthCheck:
+  type: http
+  path: /healthz
+
+readinessCheck:
+  type: http
+  path: /readyz
+
+migration:
+  command: ["/infra-iam-casdoor", "migrate"]
+
+local:
+  runCommand: [go, run, .]
+  migrationCommand: [go, run, ., migrate]
+
+configSchema:
+  type: object
+  required:
+  - IAM_TOKEN_ISSUER
+  - IAM_SIGNING_KEY
+  - IAM_CALLBACK_URL
+  - CASDOOR_URL
+  - CASDOOR_PUBLIC_URL
+  - CASDOOR_CLIENT_ID
+  - CASDOOR_CLIENT_SECRET
+  - DEPLOYMENT_ID
+  - PG_HOST
+  - PG_DATABASE
+  - PG_USER
+  - PG_PASSWORD
+  - PG_SCHEMA
+  properties:
+    IAM_TOKEN_ISSUER:
+      type: string
+      description: the iss of the tokens this member signs; every component's IAM_ISSUER equals it
+    IAM_SIGNING_KEY:
+      type: string
+      secret: true
+      description: 'the current signing key: PEM, Ed25519 (PKCS #8); usually IAM_SIGNING_KEY_FILE, re-read on rotation'
+    IAM_SIGNING_KEY_NEXT:
+      type: string
+      secret: true
+      description: the standby key, published in the JWKS before it signs; after a switch, the old key, until its tokens expire
+    IAM_ACCESS_TOKEN_TTL:
+      type: string
+      description: a duration (e.g. 2s, 500ms); default 5m (protocol 20)
+    IAM_CALLBACK_URL:
+      type: string
+      description: 'the redirect URI registered for the application in Casdoor: <this member''s public URL>/api/iam/callback'
+    IAM_AFTER_LOGIN_URL:
+      type: string
+      description: where the browser goes after a login without return_to; default /
+    IAM_COOKIE_SECURE:
+      type: boolean
+      description: the session cookie is Secure; default true (false only for plain-HTTP development)
+    IAM_SESSION_IDLE:
+      type: string
+      description: a duration (e.g. 2s, 500ms); default 30m (protocol 20)
+    IAM_SESSION_ABSOLUTE:
+      type: string
+      description: a duration (e.g. 2s, 500ms); default 12h (protocol 20)
+    CASDOOR_URL:
+      type: string
+      description: Casdoor on the back channel (token exchange, keys), e.g. http://be-casdoor:8000
+    CASDOOR_PUBLIC_URL:
+      type: string
+      description: Casdoor as the browser reaches it (the login page)
+    CASDOOR_ISSUER:
+      type: string
+      description: the iss of Casdoor's ID tokens (its origin setting); default CASDOOR_PUBLIC_URL
+    CASDOOR_CLIENT_ID:
+      type: string
+      description: the login application's client ID (authorization code)
+    CASDOOR_CLIENT_SECRET:
+      type: string
+      secret: true
+    IAM_DEV_EXCHANGE:
+      type: boolean
+      description: 'development and test deployments only (A101): POST /api/iam/dev/token exchanges a user''s password for a token; default false, and the go-live check confirms it is off'
+    IAM_DEV_CLIENT_ID:
+      type: string
+      description: the development client with the password grant (IAM_DEV_EXCHANGE)
+    IAM_DEV_CLIENT_SECRET:
+      type: string
+      secret: true
+    LOG_LEVEL:
+      type: string
+      enum:
+      - debug
+      - info
+      - warn
+      - error
+      description: SDK default info
+    OTEL_URL:
+      type: string
+      description: 'process-level: the same for every member of a shell'
+    STOP_DRAIN_DELAY:
+      type: string
+      description: a duration (e.g. 2s, 500ms); SDK default 2s
+    STOP_TIMEOUT:
+      type: string
+      description: a duration (e.g. 2s, 500ms); SDK default 30s
+    DEPLOYMENT_ID:
+      type: string
+      description: 'process-level: the same for every member of a shell; the tokens'' audience is be:deployment:<DEPLOYMENT_ID>'
+    IAM_ISSUER:
+      type: string
+      description: 'process-level: the same for every member of a shell'
+    IAM_JWKS_URL:
+      type: string
+      description: 'process-level: the same for every member of a shell'
+    AUTHZ_GRPC_URL:
+      type: string
+      description: 'process-level: the same for every member of a shell'
+    AUDIT_GRPC_URL:
+      type: string
+      description: 'process-level: the same for every member of a shell'
+    SERVICE_TLS_CERT_FILE:
+      type: string
+      secret: true
+      mount: file
+      description: a file path, re-read on rotation
+    SERVICE_TLS_KEY_FILE:
+      type: string
+      secret: true
+      mount: file
+      description: a file path, re-read on rotation
+    SERVICE_TLS_CA_FILE:
+      type: string
+      secret: true
+      mount: file
+      description: a file path, re-read on rotation
+    PG_HOST:
+      type: string
+    PG_PORT:
+      type: integer
+      description: SDK default 5432
+    PG_DATABASE:
+      type: string
+    PG_USER:
+      type: string
+    PG_PASSWORD:
+      type: string
+      secret: true
+    PG_SCHEMA:
+      type: string
+    PG_POOLER_PREPARED:
+      type: boolean
+      description: SDK default true
+    PG_STATEMENT_TIMEOUT:
+      type: string
+      description: a duration (e.g. 2s, 500ms); SDK default 5s
+    PG_LOCK_TIMEOUT:
+      type: string
+      description: a duration (e.g. 2s, 500ms); SDK default 2s
+    PG_IDLE_IN_TX_TIMEOUT:
+      type: string
+      description: a duration (e.g. 2s, 500ms); SDK default 10s
+    PG_POOL_FOREGROUND:
+      type: integer
+      description: SDK default 8
+    PG_POOL_BACKGROUND:
+      type: integer
+      description: SDK default 4
+    PG_MIGRATION_HOST:
+      type: string
+    PG_MIGRATION_PORT:
+      type: integer
+    PG_OWNER_USER:
+      type: string
+    PG_OWNER_PASSWORD:
+      type: string
+      secret: true
