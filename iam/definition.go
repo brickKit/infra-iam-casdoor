@@ -17,7 +17,7 @@ import (
 // Identity of the component.
 const (
 	ID      = "infra/iam-casdoor"
-	Version = "3.0.0"
+	Version = "3.0.1"
 )
 
 // Starting values (protocol 20).
