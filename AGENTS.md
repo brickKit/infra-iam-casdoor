@@ -14,7 +14,7 @@
 | `iam/keys.go` | 签名密钥、kid（RFC 7638 指纹）、JWKS |
 | `iam/store.go` | 登录中的请求、账号绑定、会话 |
 | `iam/migrations/` | 表 |
-| `scripts/dev_setup.py` | 开发与测试环境里准备 Casdoor 的应用、开发客户端与测试用户 |
+| `scripts/dev_setup.py` | 开发与测试环境里准备 Casdoor 的应用、开发客户端与测试用户；`TEST_USERS` 是种子数据的测试账号（账号名是轻量契约，只增不改），`make seed` 只建账号 |
 
 ## 构建与测试
 

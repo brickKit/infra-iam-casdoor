@@ -31,7 +31,7 @@ Casdoor 给不出可靠的变更序号，本组件按外部来源声明：Casdoo
 - **签发方**：`IAM_TOKEN_ISSUER` 等于每个组件的 `IAM_ISSUER`；每个组件的 `IAM_JWKS_URL` 指向本组件的 `/api/iam/jwks`。
 - **只在开发与测试环境**：
   - 在 Casdoor 里另建一个只开密码授权的客户端，配置 `IAM_DEV_EXCHANGE=true`、`IAM_DEV_CLIENT_ID`、`IAM_DEV_CLIENT_SECRET`；
-  - 仓库里的 `scripts/dev_setup.py` 按幂等的方式建好登录应用、开发客户端与测试用户。
+  - 仓库里的 `scripts/dev_setup.py` 按幂等的方式建好登录应用、开发客户端与测试用户（种子数据的测试账号；只建账号：`make seed`）。
 - **上线检查**：确认 `IAM_DEV_EXCHANGE` 没有打开，且身份产品里没有开着密码授权的客户端（A101）。
 
 ## 依赖说明
