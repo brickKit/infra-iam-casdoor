@@ -1,6 +1,6 @@
 # infra/iam-casdoor
 
-身份成员（Casdoor 适配）的代码。先读 `BRICKKIT.md` 了解它做什么；装配项目 be-assembly-standard 的边界卡、安全 02、03、协议 20 与组件协议第 08 章是它的依据。
+身份成员（Casdoor 适配）的代码。用法与边界在 `BRICKKIT.md`，为什么这样设计（术语、数据、规则、实现状态、未决问题）在 [docs/design.md](docs/design.md)；装配项目 be-assembly-standard 的边界卡、安全 02、03、协议 20 与组件协议第 08 章是它的依据。
 
 ## 代码地图
 
@@ -14,6 +14,7 @@
 | `iam/keys.go` | 签名密钥、kid（RFC 7638 指纹）、JWKS |
 | `iam/store.go` | 登录中的请求、账号绑定、会话 |
 | `iam/migrations/` | 表 |
+| `docs/design.md` | 设计：术语、数据、规则、接口、实现状态、未决问题 |
 | `scripts/dev_setup.py` | 开发与测试环境里准备 Casdoor 的应用、开发客户端与测试用户；`TEST_USERS` 是种子数据的测试账号（账号名是轻量契约，只增不改），`make seed` 只建账号 |
 
 ## 构建与测试

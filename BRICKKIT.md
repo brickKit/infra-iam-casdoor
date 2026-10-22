@@ -21,7 +21,7 @@ Casdoor 给不出可靠的变更序号，本组件按外部来源声明：Casdoo
 
 ## 部署前准备
 
-- **数据库**：自己的 schema、运行角色与属主角色（装配项目注册表的 `infra_iam_casdoor`）。
+- **数据库**：PostgreSQL 16 及以上；schema `infra_iam_casdoor`，属主角色 `infra_iam_casdoor_owner`（只供迁移）与运行角色 `infra_iam_casdoor_rw`，名字来自装配项目的注册表。三者由部署方在第一次启动前建好（be-assembly-standard 的 `make db-init` 按装配进项目的组件配置生成并执行）；表由本组件的迁移建。
 - **Casdoor 里的登录应用**：
   - 授权方式只开授权码；
   - 回调地址是本组件的 `/api/iam/callback`，即 `IAM_CALLBACK_URL`；
