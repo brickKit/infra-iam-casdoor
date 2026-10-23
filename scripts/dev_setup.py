@@ -7,7 +7,8 @@ secret. Standard library only.
 The test users are the seed data's accounts (be-assembly-standard's seed and test data conventions): TEST_USERS below,
 one per role and scope the other components' seeds grant to, plus any named in IAM_TEST_USERS. Their user names are a
 light contract: the other seeds find them by name, so a name is only ever added, never removed or given another
-meaning. `--users-only` (make seed) creates the users alone, without touching the applications.
+meaning. `--users-only` (make seed) creates the users alone, without touching the applications; without CASDOOR_URL it
+says it skipped and succeeds (the accounts are made where Casdoor is).
 
 Environment: CASDOOR_URL (e.g. http://localhost:8000), CASDOOR_ADMIN_PASSWORD (the built-in admin), CASDOOR_ORG
 (default brickkit), IAM_TEST_PASSWORD (the test users' password); without --users-only also IAM_CLIENT_ID,
@@ -39,6 +40,10 @@ TEST_USERS = {
     "test.expired": "授予已过期",
     "test.nobody": "没有任何授予",
 }
+if not E.get("CASDOOR_URL") and "--users-only" in sys.argv[1:]:
+    # make seed without a Casdoor to reach: the accounts are already there (or are made where Casdoor is)
+    print("dev_setup: CASDOOR_URL is not set: the test accounts are not created (skipped)")
+    sys.exit(0)
 BASE = E["CASDOOR_URL"].rstrip("/")
 ORG = E.get("CASDOOR_ORG", "brickkit")
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
