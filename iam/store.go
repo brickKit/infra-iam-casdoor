@@ -2,18 +2,35 @@ package iam
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/ids"
+	"github.com/brickKit/be-sdk-go/v3/records"
 	"github.com/jackc/pgx/v5"
 )
 
-// store is the member's tables: logins in flight, accounts bound to Casdoor subjects, browser sessions.
-type store struct{ db *db.DB }
+// store is the member's tables: logins in flight, accounts bound to Casdoor subjects, browser sessions. Every end of
+// a session is written to the stream be.session.ended in the transaction that ends it (be-protocol P8.28), and every
+// security change of an account to infra.iam.account_status with its new version (P8.27).
+type store struct {
+	db         *db.DB
+	events     *events.Producer
+	deployment string
+}
 
 var errNoLogin = errors.New("no such login in flight")
+
+// account is a bound account as the sessions need it.
+type account struct {
+	principal       string
+	username        string // owner/name in Casdoor
+	securityVersion int64
+}
 
 // begin saves a login in flight and forgets the ones older than LoginTTL.
 func (s store) begin(ctx context.Context, stateHash, verifier, returnTo string) error {
@@ -41,16 +58,27 @@ func (s store) take(ctx context.Context, stateHash string) (verifier, returnTo s
 	return verifier, returnTo, err
 }
 
-// principal returns the platform principal bound to a Casdoor subject, binding a new one on first sight.
-func (s store) principal(ctx context.Context, id providerUser) (string, error) {
-	var p string
-	err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-		return tx.QueryRow(ctx, `INSERT INTO iam_account (principal, provider, provider_subject, username)
-			VALUES ($1, 'casdoor', $2, $3)
-			ON CONFLICT (provider, provider_subject) DO UPDATE SET username = EXCLUDED.username
-			RETURNING principal::text`, ids.New(), id.Subject, id.Username).Scan(&p)
+// adopt gives the accounts bound before the issuer was kept the configured Casdoor's issuer: they came from it (the
+// controlled exact mapping that keeps their principals, security 02 TI11).
+func (s store) adopt(ctx context.Context, issuer string) error {
+	return s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		_, err := tx.Exec(ctx, "UPDATE iam_account SET issuer = $1 WHERE issuer = ''", issuer)
+		return err
 	})
-	return p, err
+}
+
+// principal returns the account bound to Casdoor's issuer and subject, binding a new principal on first sight. The
+// same subject of another issuer, or the same e-mail or login name, is another account: nothing is taken over.
+func (s store) principal(ctx context.Context, issuer string, id providerUser) (account, error) {
+	a := account{username: id.Username}
+	err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		return tx.QueryRow(ctx, `INSERT INTO iam_account (principal, provider, issuer, provider_subject, username)
+			VALUES ($1, 'casdoor', $2, $3, $4)
+			ON CONFLICT (provider, issuer, provider_subject) DO UPDATE SET username = EXCLUDED.username
+			RETURNING principal::text, security_version`, ids.New(), issuer, id.Subject, id.Username).
+			Scan(&a.principal, &a.securityVersion)
+	})
+	return a, err
 }
 
 // open starts a session for a principal.
@@ -61,40 +89,117 @@ func (s store) open(ctx context.Context, idHash, principal string) error {
 	})
 }
 
-// use renews a live session's idle time and returns its principal and the instant it ends at the latest (the
-// absolute timeout, or the idle one from now). A session past either timeout is ended with that reason; ok=false
-// for every session that is not live.
-func (s store) use(ctx context.Context, idHash string, idle, absolute time.Duration) (principal string, until time.Time, ok bool, err error) {
+// use returns a live session's account and the instant the session ends at the latest (the absolute timeout, or the
+// idle one from now), renewing the idle time unless renew is false (a polling request's exchange, protocol 20). The
+// session row's lock serialises the session's uses. A session past either timeout is ended with that reason (and
+// written to the ended stream); ok=false for every session that is not live.
+func (s store) use(ctx context.Context, idHash string, idle, absolute time.Duration, renew bool) (a account,
+	until time.Time, ok bool, err error) {
 	err = s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-		var created time.Time
-		err := tx.QueryRow(ctx, `UPDATE iam_session SET last_seen = now()
+		var created, seen time.Time
+		err := tx.QueryRow(ctx, `UPDATE iam_session SET last_seen = CASE WHEN $4 THEN now() ELSE last_seen END
 			WHERE id_hash = $1 AND ended_at IS NULL AND last_seen >= now() - make_interval(secs => $2)
 				AND created_at >= now() - make_interval(secs => $3)
-			RETURNING principal::text, created_at`, idHash, idle.Seconds(), absolute.Seconds()).Scan(&principal, &created)
+			RETURNING principal::text, created_at, last_seen`, idHash, idle.Seconds(), absolute.Seconds(), renew).
+			Scan(&a.principal, &created, &seen)
 		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = tx.Exec(ctx, `UPDATE iam_session SET ended_at = now(),
+			var ended string
+			err = tx.QueryRow(ctx, `UPDATE iam_session SET ended_at = now(),
 					end_reason = CASE WHEN created_at < now() - make_interval(secs => $2) THEN 'absolute' ELSE 'idle' END
-				WHERE id_hash = $1 AND ended_at IS NULL`, idHash, absolute.Seconds())
-			return err
+				WHERE id_hash = $1 AND ended_at IS NULL RETURNING id_hash`, idHash, absolute.Seconds()).Scan(&ended)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil // unknown or already ended
+			}
+			if err != nil {
+				return err
+			}
+			return s.ended(ctx, tx, ended)
 		}
 		if err != nil {
 			return err
 		}
+		if err := tx.QueryRow(ctx, "SELECT username, security_version FROM iam_account WHERE principal = $1",
+			a.principal).Scan(&a.username, &a.securityVersion); err != nil {
+			return err
+		}
 		ok = true
 		until = created.Add(absolute)
-		if i := time.Now().Add(idle); i.Before(until) {
+		if i := seen.Add(idle); i.Before(until) {
 			until = i
 		}
 		return nil
 	})
-	return principal, until, ok, err
+	return a, until, ok, err
 }
 
 // end ends a session.
 func (s store) end(ctx context.Context, idHash, reason string) error {
 	return s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-		_, err := tx.Exec(ctx, "UPDATE iam_session SET ended_at = now(), end_reason = $2 WHERE id_hash = $1 AND ended_at IS NULL",
-			idHash, reason)
-		return err
+		var ended string
+		err := tx.QueryRow(ctx, `UPDATE iam_session SET ended_at = now(), end_reason = $2
+			WHERE id_hash = $1 AND ended_at IS NULL RETURNING id_hash`, idHash, reason).Scan(&ended)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return s.ended(ctx, tx, ended)
 	})
+}
+
+// securityChange is a security change of an account (a password change; later the forced logout, the reset of a
+// second factor, the deactivation): its version goes up by one, every live session but keep ends with reason, and the
+// account's status goes out with the new version, all in one transaction (P8.27). keep is the session that made the
+// change ("" for none): its next exchange gets a token of the new version.
+func (s store) securityChange(ctx context.Context, principal, reason, keep string) (int64, error) {
+	var version int64
+	err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		if err := tx.QueryRow(ctx, `UPDATE iam_account SET security_version = security_version + 1
+			WHERE principal = $1 RETURNING security_version`, principal).Scan(&version); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `UPDATE iam_session SET ended_at = now(), end_reason = $2
+			WHERE principal = $1 AND ended_at IS NULL AND id_hash <> $3 RETURNING id_hash`, principal, reason, keep)
+		if err != nil {
+			return err
+		}
+		ended, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		for _, h := range ended {
+			if err := s.ended(ctx, tx, h); err != nil {
+				return err
+			}
+		}
+		return s.status(ctx, tx, principal, version)
+	})
+	return version, err
+}
+
+// ended writes a session's end to the stream the edge reads by position.
+func (s store) ended(ctx context.Context, tx db.Tx, idHash string) error {
+	_, err := s.events.Emit(ctx, tx, StreamEnded, events.Event{Type: TypeEnded, RecordID: idHash, Version: 1,
+		Projection: events.Full, Data: map[string]string{"session_digest": idHash}})
+	return err
+}
+
+// status writes the account's status record (be.security.account_status, security 09a) with its security version;
+// the version is also the record's revision in this member's database.
+func (s store) status(ctx context.Context, tx db.Tx, principal string, version int64) error {
+	raw, digest, err := records.Seal("be.security.account_status", map[string]any{
+		"record_type": "be.security.account_status", "schema": "1.0", "deployment": s.deployment, "authority": ID,
+		"id": principal, "revision": map[string]any{"domain": StreamAccount, "value": strconv.FormatInt(version, 10)},
+		"account": map[string]any{"deployment": s.deployment, "kind": "user", "id": principal},
+		"status":  "active", "security_version": version})
+	if err != nil {
+		return err
+	}
+	if _, err := records.Open("be.security.account_status", raw, digest); err != nil {
+		return err // the record this member sends passes its own schema (be-protocol schemas/security)
+	}
+	_, err = s.events.Emit(ctx, tx, StreamAccount, events.Event{Type: TypeAccount, RecordID: principal,
+		Version: version, Projection: events.Full, Data: json.RawMessage(raw), Subjects: []string{principal}})
+	return err
 }

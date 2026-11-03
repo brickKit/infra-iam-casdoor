@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://brickkit.dev/infra-iam-casdoor/events/infra.iam.account_status_changed.v1.schema.json",
+  "title": "infra.iam.account_status_changed.v1",
+  "description": "An account's status changed, or its security version went up (a password change; be-protocol P8.27). The payload is the security record be.security.account_status in its canonical bytes (D76); the record ID is the account's principal, the version its security version. The authorization member takes it as an internal source.",
+  "$ref": "https://github.com/brickKit/be-protocol/schemas/security/be.security.account_status.schema.json"
+}

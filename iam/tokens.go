@@ -7,10 +7,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// issue signs an access token for a principal (protocol P8.1: typ at+jwt, a kid, EdDSA; iss, aud, sub, iat, nbf,
-// exp; no role or department claims, authorization comes from the view only). The lifetime never runs past until
-// when until is set (a session's end).
-func (m *Module) issue(principal string, now time.Time, until time.Time) (string, time.Time, error) {
+// issue signs an access token for a principal at the account's security version (protocol P8.1: typ at+jwt, a kid,
+// EdDSA; iss, aud, sub, iat, nbf, exp and be_sv, P8.27; no role or department claims, authorization comes from the
+// view only). The lifetime never runs past until when until is set (a session's end).
+func (m *Module) issue(principal string, securityVersion int64, now time.Time, until time.Time) (string, time.Time, error) {
 	key, _, err := m.keys.keys()
 	if err != nil {
 		return "", time.Time{}, err
@@ -23,7 +23,7 @@ func (m *Module) issue(principal string, now time.Time, until time.Time) (string
 	_, _ = rand.Read(jti)
 	t := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
 		"iss": m.issuer, "aud": m.audience, "sub": principal, "iat": now.Unix(), "nbf": now.Unix(),
-		"exp": exp.Unix(), "jti": b64(jti)})
+		"exp": exp.Unix(), "jti": b64(jti), "be_sv": securityVersion})
 	t.Header["typ"] = "at+jwt"
 	t.Header["kid"] = key.kid
 	s, err := t.SignedString(key.priv)

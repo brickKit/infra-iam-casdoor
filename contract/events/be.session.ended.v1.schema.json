@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://brickkit.dev/infra-iam-casdoor/events/be.session.ended.v1.schema.json",
+  "title": "be.session.ended.v1",
+  "description": "A browser session ended (logout, idle or absolute timeout, a password change ended the account's other sessions). The record ID is the session digest; the stream be.session.ended has one partition and the edge reads it by position through SessionService/Ended (be-protocol P8.28). Every identity member writes the same event.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session_digest"],
+  "properties": {
+    "session_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Lowercase hex SHA-256 of the session cookie's value"}
+  }
+}

@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,9 +60,11 @@ func randomToken() string {
 	return b64(b)
 }
 
+// hashOf is what the tables keep of a secret (a session cookie, a login's state): its SHA-256 in lowercase hex, the
+// form the edge sends as a session digest (be-protocol P8.28).
 func hashOf(s string) string {
 	sum := sha256.Sum256([]byte(s))
-	return b64(sum[:])
+	return hex.EncodeToString(sum[:])
 }
 
 // authorizeURL is where the browser goes to log in.
@@ -108,6 +112,30 @@ func (c *casdoor) code(ctx context.Context, code, verifier string) (providerUser
 func (c *casdoor) password(ctx context.Context, username, password string) (providerUser, error) {
 	return c.exchange(ctx, map[string]string{"grant_type": "password", "client_id": c.devClientID,
 		"client_secret": c.devSecret(), "username": username, "password": password, "scope": "openid"}, c.devClientID)
+}
+
+// setPassword changes a user's password in Casdoor with the login application's credentials; Casdoor still checks
+// the old password (experiment 16-03), and a wrong one counts toward its lockout. Casdoor answers 200 with status
+// "error" when it refuses.
+func (c *casdoor) setPassword(ctx context.Context, username, oldPassword, newPassword string) error {
+	owner, name, ok := strings.Cut(username, "/")
+	if !ok {
+		return errs.From(fmt.Errorf("casdoor: the account's user name %q is not owner/name", username))
+	}
+	var ans struct{ Status, Msg string }
+	// everything in the form body: neither the passwords nor the client secret travel in the URL
+	err := c.http.Do(ctx, calls.Request{Method: "POST", Path: "/api/set-password", Form: url.Values{
+		"clientId": {c.clientID}, "clientSecret": {c.secret()}, "userOwner": {owner}, "userName": {name},
+		"oldPassword": {oldPassword}, "newPassword": {newPassword}}}, &ans)
+	if err != nil {
+		return err
+	}
+	if ans.Status != "ok" {
+		// the message (which may say how many attempts are left) is logged by the caller, never sent
+		return errs.New(errs.ReasonRequestInvalid, "the password could not be changed").With("field", "old_password").
+			With("provider_error", ans.Msg)
+	}
+	return nil
 }
 
 // verify checks an ID token: Casdoor's signature, its issuer, the audience (the client it was issued to), the

@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
@@ -59,11 +61,12 @@ func TestTokensPassTheSDKsVerification(t *testing.T) {
 	require.NoError(t, err)
 	v := &identity.Verifier{Issuer: m.issuer, Audience: m.audience, Keys: ks}
 	const alice = "0190f3a1-0000-7000-8000-0000000000a1"
-	tok, exp, err := m.issue(alice, time.Now(), time.Time{})
+	tok, exp, err := m.issue(alice, 3, time.Now(), time.Time{})
 	require.NoError(t, err)
 	u, err := v.Verify(tok)
 	require.NoError(t, err)
 	assert.Equal(t, alice, u.Subject)
+	assert.EqualValues(t, 3, u.SecurityVersion, "be_sv is the account's security version (P8.27)")
 	assert.WithinDuration(t, time.Now().Add(DefaultTokenTTL), exp, 2*time.Second)
 
 	header, _ := jsonPart(t, tok, 0)
@@ -76,7 +79,7 @@ func TestTokensPassTheSDKsVerification(t *testing.T) {
 
 	// a session ending sooner bounds the token
 	soon := time.Now().Add(time.Minute)
-	_, exp, err = m.issue(alice, time.Now(), soon)
+	_, exp, err = m.issue(alice, 1, time.Now(), soon)
 	require.NoError(t, err)
 	assert.Equal(t, soon.Unix(), exp.Unix())
 }
@@ -90,7 +93,7 @@ func TestKeyRotation(t *testing.T) {
 	_, set, err := m.keys.keys()
 	require.NoError(t, err)
 	assert.Len(t, set, 2, "the standby key is published ahead")
-	oldTok, _, err := m.issue("0190f3a1-0000-7000-8000-0000000000a1", time.Now(), time.Time{})
+	oldTok, _, err := m.issue("0190f3a1-0000-7000-8000-0000000000a1", 1, time.Now(), time.Time{})
 	require.NoError(t, err)
 
 	cur, next = newKey, oldKey // the switch: the old key stays published until its tokens expire
@@ -98,7 +101,7 @@ func TestKeyRotation(t *testing.T) {
 	ks, err := identity.NewKeySet(context.Background(), srv.URL)
 	require.NoError(t, err)
 	v := &identity.Verifier{Issuer: m.issuer, Audience: m.audience, Keys: ks}
-	newTok, _, err := m.issue("0190f3a1-0000-7000-8000-0000000000a1", time.Now(), time.Time{})
+	newTok, _, err := m.issue("0190f3a1-0000-7000-8000-0000000000a1", 1, time.Now(), time.Time{})
 	require.NoError(t, err)
 	_, err = v.Verify(oldTok)
 	assert.NoError(t, err)
@@ -110,7 +113,7 @@ func TestKeyRotation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, set, 1)
 	cur = "not a key"
-	_, _, err = m.issue("0190f3a1-0000-7000-8000-0000000000a1", time.Now(), time.Time{})
+	_, _, err = m.issue("0190f3a1-0000-7000-8000-0000000000a1", 1, time.Now(), time.Time{})
 	assert.Error(t, err, "a current key that does not parse signs nothing")
 }
 
@@ -125,7 +128,8 @@ func TestReturnToStaysOnThisSite(t *testing.T) {
 func TestPKCE(t *testing.T) {
 	v, c := pkce()
 	assert.Len(t, v, 43)
-	assert.Equal(t, hashOf(v), c, "S256: base64url(SHA-256(verifier))")
+	sum := sha256.Sum256([]byte(v))
+	assert.Equal(t, base64.RawURLEncoding.EncodeToString(sum[:]), c, "S256: base64url(SHA-256(verifier))")
 	assert.NotEqual(t, randomToken(), randomToken())
 }
 

@@ -1,7 +1,8 @@
 // Package iam is the identity member in front of Casdoor (boundary card infra/iam-casdoor): browser login by
-// authorization code with PKCE and a server-side session, access tokens it signs itself for the platform principal,
-// its public keys, and in development and test deployments only an exchange of a user's password for a token (A101).
-// Step 5 of the representative deployment experiment: the change pull, events and the edge plugin come later.
+// authorization code with PKCE and a server-side session, access tokens it signs itself for the platform principal
+// with the account's security version, the edge's session methods (be.session.v1, be-protocol P8.28), the password
+// change, its public keys, and in development and test deployments only an exchange of a user's password for a token
+// (A101). The pull of changes made in Casdoor itself, the deactivation and the watermark come with foundations item 3.
 package iam
 
 import (
@@ -9,16 +10,50 @@ import (
 	"io/fs"
 	"time"
 
+	sdkauthz "github.com/brickKit/be-sdk-go/v3/authz"
 	"github.com/brickKit/be-sdk-go/v3/component"
 	"github.com/brickKit/be-sdk-go/v3/config"
+	"github.com/brickKit/be-sdk-go/v3/events"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 )
 
 // Identity of the component.
 const (
 	ID      = "infra/iam-casdoor"
-	Version = "3.0.15"
+	Version = "3.0.16"
 )
+
+// GRPCPort is the system surface's port (registry/ports.tsv).
+const GRPCPort = 9200
+
+// The streams (be-protocol P8.27, P8.28): the ended sessions the edge reads by position (one partition, the name and
+// type every identity member uses), and the account status the authorization member takes as an internal source.
+const (
+	StreamEnded   = "be.session.ended"
+	TypeEnded     = "be.session.ended.v1"
+	StreamAccount = "infra.iam.account_status"
+	TypeAccount   = "infra.iam.account_status_changed.v1"
+)
+
+// The system methods' operations and the edge, their only caller.
+const (
+	Sessions   = "infra.iam.session"
+	OpExchange = "infra.iam.session.exchange"
+	OpEnded    = "infra.iam.session.ended"
+	Edge       = "infra/edge"
+)
+
+// Definitions are the resources and operations: only the system methods have operations; the routes are public (a
+// credential is obtained through them in the first place) and protect themselves with the session cookie.
+func Definitions() *sdkauthz.Definitions {
+	return &sdkauthz.Definitions{Component: ID,
+		Resources: []sdkauthz.Resource{{Type: Sessions, ViewOperation: OpEnded,
+			Dimensions: map[string]sdkauthz.Dimension{}, Fields: map[string]sdkauthz.Field{}}},
+		Operations: []sdkauthz.Operation{
+			{Key: OpExchange, ResourceType: Sessions, Purpose: "action", RiskClass: "low"},
+			{Key: OpEnded, ResourceType: Sessions, Purpose: "read", RiskClass: "low"},
+		}}
+}
 
 // Starting values (protocol 20).
 const (
@@ -65,6 +100,8 @@ func Keys() []config.Key {
 
 // Definition is the component as the launcher and the shells take it.
 func Definition() component.Definition {
-	return component.Definition{ID: ID, Version: Version, Keys: Keys(), Migrations: migrations(),
-		New: func(rt *runtime.Runtime) (component.Module, error) { return New(rt) }}
+	return component.Definition{ID: ID, Version: Version, Keys: Keys(), Migrations: migrations(), GRPCPort: GRPCPort,
+		Streams: []events.Stream{{Name: StreamEnded, Partitions: 1}, {Name: StreamAccount, Partitions: 4}},
+		Authz:   Definitions(),
+		New:     func(rt *runtime.Runtime) (component.Module, error) { return New(rt) }}
 }

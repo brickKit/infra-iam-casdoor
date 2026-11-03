@@ -1,6 +1,7 @@
 package iam
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ const CookieName = "be_session"
 type Module struct {
 	rt       *runtime.Runtime
 	store    store
+	impl     string // IMPLEMENTATION_INSTANCE: the ended stream's cursors name it
 	casdoor  *casdoor
 	keys     *keyRing
 	issuer   string
@@ -27,7 +29,6 @@ type Module struct {
 	secure   bool
 	after    string
 	dev      bool
-	ended    errs.Declared
 }
 
 // New builds the module from its runtime.
@@ -37,12 +38,11 @@ func New(rt *runtime.Runtime) (*Module, error) {
 		return nil, errs.New(errs.ReasonRequestInvalid, "DEPLOYMENT_ID is required: the tokens' audience is be:deployment:<DEPLOYMENT_ID>")
 	}
 	cd, _ := rt.HTTPAt("casdoor", cfg.String("CASDOOR_URL"))
-	m := &Module{rt: rt, store: store{db: rt.DB}, issuer: cfg.String("IAM_TOKEN_ISSUER"),
+	m := &Module{rt: rt, store: store{db: rt.DB, events: rt.Events, deployment: cfg.String("DEPLOYMENT_ID")},
+		impl: cfg.String("IMPLEMENTATION_INSTANCE"), issuer: cfg.String("IAM_TOKEN_ISSUER"),
 		audience: "be:deployment:" + cfg.String("DEPLOYMENT_ID"), ttl: cfg.Duration("IAM_ACCESS_TOKEN_TTL"),
 		idle: cfg.Duration("IAM_SESSION_IDLE"), absolute: cfg.Duration("IAM_SESSION_ABSOLUTE"),
-		secure: cfg.Bool("IAM_COOKIE_SECURE"), after: cfg.String("IAM_AFTER_LOGIN_URL"), dev: cfg.Bool("IAM_DEV_EXCHANGE"),
-		ended: errs.Define(ID, "SESSION_ENDED", errs.Unauthenticated, 401, errs.RetryNo,
-			"The session has ended; log in again")}
+		secure: cfg.Bool("IAM_COOKIE_SECURE"), after: cfg.String("IAM_AFTER_LOGIN_URL"), dev: cfg.Bool("IAM_DEV_EXCHANGE")}
 	issuerOfIDTokens := cfg.String("CASDOOR_ISSUER")
 	if issuerOfIDTokens == "" {
 		issuerOfIDTokens = cfg.String("CASDOOR_PUBLIC_URL")
@@ -73,13 +73,18 @@ func New(rt *runtime.Runtime) (*Module, error) {
 	return m, nil
 }
 
-// Routes registers the login, the session's token, the logout, the public keys and, in development deployments,
-// the password exchange. They are all public: they are how a credential is obtained in the first place.
+// Start gives the accounts bound before the issuer was kept the configured Casdoor's issuer (store.adopt).
+func (m *Module) Start(ctx context.Context) error { return m.store.adopt(ctx, m.casdoor.issuer) }
+
+// Routes registers the login, the logout, the password change, the public keys and, in development deployments, the
+// password exchange. They are all public: they are how a credential is obtained in the first place, and the session
+// cookie protects the others. The session's token is not among them: only the edge exchanges, on the system surface
+// (Services), so a page's script never reads a token (protocol 20 UI04).
 func (m *Module) Routes(r *httpx.Routes) error {
 	r.Add(httpx.Route{Method: "GET", Path: "/api/iam/login", Public: true, Handle: m.login})
 	r.Add(httpx.Route{Method: "GET", Path: "/api/iam/callback", Public: true, Handle: m.callback})
-	r.Add(httpx.Route{Method: "POST", Path: "/api/iam/session/token", Public: true, Handle: m.sessionToken})
 	r.Add(httpx.Route{Method: "POST", Path: "/api/iam/logout", Public: true, Handle: m.logout})
+	r.Add(httpx.Route{Method: "POST", Path: "/api/iam/password", Public: true, Handle: m.changePassword})
 	r.Add(httpx.Route{Method: "GET", Path: "/api/iam/jwks", Public: true, Handle: m.jwks})
 	if m.dev {
 		r.Add(httpx.Route{Method: "POST", Path: "/api/iam/dev/token", Public: true, Handle: m.devToken})
@@ -118,12 +123,12 @@ func (m *Module) callback(c *httpx.Context) error {
 	if err != nil {
 		return err
 	}
-	principal, err := m.store.principal(c.Ctx(), id)
+	a, err := m.store.principal(c.Ctx(), m.casdoor.issuer, id)
 	if err != nil {
 		return err
 	}
 	secret := randomToken()
-	if err := m.store.open(c.Ctx(), hashOf(secret), principal); err != nil {
+	if err := m.store.open(c.Ctx(), hashOf(secret), a.principal); err != nil {
 		return err
 	}
 	c.SetCookie(&http.Cookie{Name: CookieName, Value: secret, Path: "/", HttpOnly: true, Secure: m.secure,
@@ -139,30 +144,14 @@ func (m *Module) session(c *httpx.Context) string {
 	return hashOf(ck.Value)
 }
 
-// sessionToken is the edge's exchange: a live session's cookie for a short access token (protocol 20, D61).
-func (m *Module) sessionToken(c *httpx.Context) error {
-	h := m.session(c)
-	if h == "" {
-		return m.ended.New("no live session")
-	}
-	principal, until, ok, err := m.store.use(c.Ctx(), h, m.idle, m.absolute)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return m.ended.New("no live session")
-	}
-	return m.answerToken(c, principal, until)
-}
-
-func (m *Module) answerToken(c *httpx.Context, principal string, until time.Time) error {
+func (m *Module) answerToken(c *httpx.Context, a account, until time.Time) error {
 	now := time.Now()
-	tok, exp, err := m.issue(principal, now, until)
+	tok, exp, err := m.issue(a.principal, a.securityVersion, now, until)
 	if err != nil {
 		return err
 	}
 	return c.JSON(200, map[string]any{"access_token": tok, "token_type": "Bearer",
-		"expires_in": int(exp.Sub(now).Seconds()), "principal": principal})
+		"expires_in": int(exp.Sub(now).Seconds()), "principal": a.principal})
 }
 
 func (m *Module) logout(c *httpx.Context) error {
@@ -203,9 +192,9 @@ func (m *Module) devToken(c *httpx.Context) error {
 	if err != nil {
 		return err
 	}
-	principal, err := m.store.principal(c.Ctx(), id)
+	a, err := m.store.principal(c.Ctx(), m.casdoor.issuer, id)
 	if err != nil {
 		return err
 	}
-	return m.answerToken(c, principal, time.Time{})
+	return m.answerToken(c, a, time.Time{})
 }
