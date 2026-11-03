@@ -14,6 +14,7 @@
 | `iam/tokens.go` | 签发访问令牌 |
 | `iam/keys.go` | 签名密钥、kid（RFC 7638 指纹）、JWKS |
 | `iam/store.go` | 登录中的请求、按签发者与 subject 的账号绑定、会话；会话结束与安全变更在同一事务里写发件表 |
+| `iam/accounts.go` | 账号状态流的声明（水位来源，补取者与读取者只有 `infra/authz`）与两个读取函数：按主体批量读取、快照 |
 | `iam/migrations/` | 表 |
 | `contract/events/` | 发出的两种事件的 schema（`iam/manifest_test.go` 核对清单） |
 | `docs/design.md` | 设计：术语、数据、规则、接口、实现状态、未决问题 |

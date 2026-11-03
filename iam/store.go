@@ -59,24 +59,55 @@ func (s store) take(ctx context.Context, stateHash string) (verifier, returnTo s
 }
 
 // adopt gives the accounts bound before the issuer was kept the configured Casdoor's issuer: they came from it (the
-// controlled exact mapping that keeps their principals, security 02 TI11).
+// controlled exact mapping that keeps their principals, security 02 TI11); and sends the status of the accounts
+// whose status never went out (bound before it did), so the authorization member's projection has every account.
 func (s store) adopt(ctx context.Context, issuer string) error {
 	return s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-		_, err := tx.Exec(ctx, "UPDATE iam_account SET issuer = $1 WHERE issuer = ''", issuer)
-		return err
+		if _, err := tx.Exec(ctx, "UPDATE iam_account SET issuer = $1 WHERE issuer = ''", issuer); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, "SELECT principal::text, security_version FROM iam_account WHERE status_record IS NULL")
+		if err != nil {
+			return err
+		}
+		type pending struct {
+			principal string
+			version   int64
+		}
+		todo, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (pending, error) {
+			var p pending
+			return p, r.Scan(&p.principal, &p.version)
+		})
+		if err != nil {
+			return err
+		}
+		for _, p := range todo {
+			if err := s.status(ctx, tx, p.principal, p.version); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
-// principal returns the account bound to Casdoor's issuer and subject, binding a new principal on first sight. The
-// same subject of another issuer, or the same e-mail or login name, is another account: nothing is taken over.
+// principal returns the account bound to Casdoor's issuer and subject, binding a new principal on first sight (its
+// status goes out in the same transaction). The same subject of another issuer, or the same e-mail or login name, is
+// another account: nothing is taken over.
 func (s store) principal(ctx context.Context, issuer string, id providerUser) (account, error) {
 	a := account{username: id.Username}
 	err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-		return tx.QueryRow(ctx, `INSERT INTO iam_account (principal, provider, issuer, provider_subject, username)
+		var bound bool
+		if err := tx.QueryRow(ctx, `INSERT INTO iam_account (principal, provider, issuer, provider_subject, username)
 			VALUES ($1, 'casdoor', $2, $3, $4)
 			ON CONFLICT (provider, issuer, provider_subject) DO UPDATE SET username = EXCLUDED.username
-			RETURNING principal::text, security_version`, ids.New(), issuer, id.Subject, id.Username).
-			Scan(&a.principal, &a.securityVersion)
+			RETURNING principal::text, security_version, xmax = 0`, ids.New(), issuer, id.Subject, id.Username).
+			Scan(&a.principal, &a.securityVersion, &bound); err != nil {
+			return err
+		}
+		if !bound {
+			return nil
+		}
+		return s.status(ctx, tx, a.principal, a.securityVersion)
 	})
 	return a, err
 }
@@ -198,6 +229,9 @@ func (s store) status(ctx context.Context, tx db.Tx, principal string, version i
 	}
 	if _, err := records.Open("be.security.account_status", raw, digest); err != nil {
 		return err // the record this member sends passes its own schema (be-protocol schemas/security)
+	}
+	if _, err := tx.Exec(ctx, "UPDATE iam_account SET status_record = $2 WHERE principal = $1", principal, raw); err != nil {
+		return err // what the batch read and the snapshot answer with (P9.30)
 	}
 	_, err = s.events.Emit(ctx, tx, StreamAccount, events.Event{Type: TypeAccount, RecordID: principal,
 		Version: version, Projection: events.Full, Data: json.RawMessage(raw), Subjects: []string{principal}})

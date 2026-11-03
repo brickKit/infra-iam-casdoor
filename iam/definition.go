@@ -20,7 +20,7 @@ import (
 // Identity of the component.
 const (
 	ID      = "infra/iam-casdoor"
-	Version = "3.0.16"
+	Version = "3.0.17"
 )
 
 // GRPCPort is the system surface's port (registry/ports.tsv).
@@ -35,23 +35,32 @@ const (
 	TypeAccount   = "infra.iam.account_status_changed.v1"
 )
 
-// The system methods' operations and the edge, their only caller.
+// The system methods' operations and their callers: the edge exchanges and reads the ended sessions; the
+// authorization member pulls and reads the account status, a watermark source (P9.13, P9.30).
 const (
 	Sessions   = "infra.iam.session"
 	OpExchange = "infra.iam.session.exchange"
 	OpEnded    = "infra.iam.session.ended"
 	Edge       = "infra/edge"
+
+	Accounts      = "infra.iam.account_status"
+	OpAccountPull = "infra.iam.account_status.pull"
+	OpAccountRead = "infra.iam.account_status.read"
+	Authz         = "infra/authz"
 )
 
 // Definitions are the resources and operations: only the system methods have operations; the routes are public (a
 // credential is obtained through them in the first place) and protect themselves with the session cookie.
 func Definitions() *sdkauthz.Definitions {
 	return &sdkauthz.Definitions{Component: ID,
-		Resources: []sdkauthz.Resource{{Type: Sessions, ViewOperation: OpEnded,
-			Dimensions: map[string]sdkauthz.Dimension{}, Fields: map[string]sdkauthz.Field{}}},
+		Resources: []sdkauthz.Resource{
+			{Type: Sessions, ViewOperation: OpEnded, Dimensions: map[string]sdkauthz.Dimension{}, Fields: map[string]sdkauthz.Field{}},
+			{Type: Accounts, ViewOperation: OpAccountRead, Dimensions: map[string]sdkauthz.Dimension{}, Fields: map[string]sdkauthz.Field{}}},
 		Operations: []sdkauthz.Operation{
 			{Key: OpExchange, ResourceType: Sessions, Purpose: "action", RiskClass: "low"},
 			{Key: OpEnded, ResourceType: Sessions, Purpose: "read", RiskClass: "low"},
+			{Key: OpAccountPull, ResourceType: Accounts, Purpose: "read", RiskClass: "low"},
+			{Key: OpAccountRead, ResourceType: Accounts, Purpose: "read", RiskClass: "low"},
 		}}
 }
 
@@ -101,7 +110,7 @@ func Keys() []config.Key {
 // Definition is the component as the launcher and the shells take it.
 func Definition() component.Definition {
 	return component.Definition{ID: ID, Version: Version, Keys: Keys(), Migrations: migrations(), GRPCPort: GRPCPort,
-		Streams: []events.Stream{{Name: StreamEnded, Partitions: 1}, {Name: StreamAccount, Partitions: 4}},
+		Streams: []events.Stream{{Name: StreamEnded, Partitions: 1}, accountStream},
 		Authz:   Definitions(),
 		New:     func(rt *runtime.Runtime) (component.Module, error) { return New(rt) }}
 }

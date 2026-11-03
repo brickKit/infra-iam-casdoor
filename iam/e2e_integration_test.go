@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -30,11 +31,14 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/calls"
+	"github.com/brickKit/be-sdk-go/v3/canon"
 	"github.com/brickKit/be-sdk-go/v3/config"
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/launcher"
+	"github.com/brickKit/be-sdk-go/v3/projection"
+	"github.com/brickKit/be-sdk-go/v3/records"
 	"github.com/brickKit/be-sdk-go/v3/sectest"
 	"github.com/brickKit/be-sdk-go/v3/sessionpb"
 	"github.com/jackc/pgx/v5"
@@ -370,10 +374,17 @@ func TestEndToEndAgainstCasdoor(t *testing.T) {
 		}
 	})
 	keep, _ := browserLogin(t, itThrowaway, first, "")
-	other, _ := browserLogin(t, itThrowaway, first, "")
 	kept, err := exchange(keep, true)
 	require.NoError(t, err)
 	throwaway := kept.GetPrincipal()
+	statuses := func() (n int) {
+		require.NoError(t, admin.QueryRow(ctx, "SELECT count(*) FROM "+itSchema+".be_outbox WHERE stream = $1 AND record_id = $2",
+			StreamAccount, throwaway).Scan(&n))
+		return n
+	}
+	assert.Equal(t, 1, statuses(), "a new account's status goes out when it is bound")
+	other, _ := browserLogin(t, itThrowaway, first, "")
+	assert.Equal(t, 1, statuses(), "a later login sends nothing")
 	version := func() (v int64) {
 		require.NoError(t, admin.QueryRow(ctx, "SELECT security_version FROM "+itSchema+".iam_account WHERE principal = $1",
 			throwaway).Scan(&v))
@@ -396,10 +407,59 @@ func TestEndToEndAgainstCasdoor(t *testing.T) {
 	var payload []byte
 	require.NoError(t, admin.QueryRow(ctx, "SELECT count(*), max(payload::text)::bytea FROM "+itSchema+".be_outbox "+
 		"WHERE stream = $1 AND record_id = $2", StreamAccount, throwaway).Scan(&statusRows, &payload))
-	assert.Equal(t, 1, statusRows, "the account's status went out")
+	assert.Equal(t, 2, statusRows, "the account's status went out when it was bound and when it changed")
 	assert.Contains(t, string(payload), `"security_version":2`)
 	_, newPasswordWorks := casdoorSubjectOK(t, itThrowaway, second)
 	assert.True(t, newPasswordWorks, "Casdoor has the new password")
+
+	// the authorization member reads the account status (P9.30-P9.33): every account, the same bytes as the event
+	accounts := func(component string) projection.RecordClient {
+		m, err := calls.NewMember(nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { m.Close() })
+		m.SetTLS(w.TLS(t, component))
+		conn, err := m.GRPC(ID, "localhost:"+strconv.Itoa(GRPCPort))
+		require.NoError(t, err)
+		return projection.RecordClient{Conn: conn, Stream: StreamAccount}
+	}
+	reader := accounts(Authz)
+	nobody := ids.New().String()
+	read, from, err := reader.Read(ctx, []string{alice.Principal, bobBefore, throwaway, otherIssuers, nobody})
+	require.NoError(t, err)
+	assert.True(t, from.Primary)
+	assert.Equal(t, "iam-it-1", from.Impl)
+	got := map[string]string{}
+	for _, r := range read {
+		got[r.ID] = r.State
+		if r.State != projection.Exists {
+			continue
+		}
+		rec, err := records.Open("be.security.account_status", r.Data,
+			canon.DigestBytes("be.security.account_status", records.Major, r.Data))
+		require.NoError(t, err, "a be.security.account_status record")
+		assert.Equal(t, strconv.FormatInt(r.Version, 10), fmt.Sprint(rec["security_version"]),
+			"the record's version is its security version")
+	}
+	assert.Equal(t, map[string]string{alice.Principal: projection.Exists, bobBefore: projection.Exists,
+		throwaway: projection.Exists, otherIssuers: projection.Exists, nobody: projection.Purged}, got,
+		"bound accounts, and the ones from before whose status went out at start")
+	assert.EqualValues(t, 2, read[2].Version, "the throwaway account after its password change")
+	assert.JSONEq(t, string(payload), string(read[2].Data), "the read answers with what the event carried")
+	var snapshot []string
+	for cursor := ""; ; {
+		page, next, _, err := reader.Snapshot(ctx, cursor)
+		require.NoError(t, err)
+		for _, r := range page {
+			snapshot = append(snapshot, r.ID)
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	assert.Subset(t, snapshot, []string{alice.Principal, bobBefore, throwaway, otherIssuers})
+	_, _, err = accounts(Edge).Read(ctx, []string{alice.Principal})
+	assert.True(t, errs.Is(err, "be", errs.ReasonPermissionDenied), "only the authorization member reads: %v", err)
 
 	// the idle timeout ends a session; the edge reads it
 	_, err = admin.Exec(ctx, "UPDATE "+itSchema+".iam_session SET last_seen = now() - interval '31 minutes' WHERE id_hash = $1", digest(session))

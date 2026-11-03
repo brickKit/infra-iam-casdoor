@@ -33,6 +33,7 @@
 | `iam_login` | 登录中的请求（状态的摘要、PKCE、返回地址），用一次 |
 | `iam_session` | 会话（Cookie 秘密的摘要、空闲与绝对期限、结束的时刻与原因） |
 | 发件表（SDK 的 `be_outbox`） | 流 `be.session.ended`（会话的每一次结束）与 `infra.iam.account_status`（账号状态与版本） |
+| `iam_account.status_record` | 账号最后一次发出的状态记录的原字节：批量读取与快照照原样回答，与事件的载荷是同一份字节（P9.30）；启动时给还没发过的账号补发 |
 
 签名密钥是挂载的文件，不在库里。以后加：服务令牌的签发记录（部署选这条路线时；默认的服务身份是部署信任域签发的证书）、外部身份源的绑定、移动端的刷新令牌。
 
@@ -57,13 +58,12 @@
 
 本版：
 - 用户面全部是公开路由（登录之前没有令牌），由会话 Cookie 保护：`GET /api/iam/login`、`GET /api/iam/callback`、`POST /api/iam/logout`、`POST /api/iam/password`、`GET /api/iam/jwks`；开发环境另有 `POST /api/iam/dev/token`。
-- 系统面（端口 9200）：`be.session.v1.SessionService` 的 `Exchange` 与 `Ended`，只许 `infra/edge`。
+- 系统面（端口 9200）：`be.session.v1.SessionService` 的 `Exchange` 与 `Ended`，只许 `infra/edge`；账号状态流的补取（`be.source.v1.WatermarkService`）与批量读取、快照（`be.source.v1.RecordService`），只许 `infra/authz`，都是 SDK 自带的标准方法（A115、A121），本组件只给出两个读取函数（`iam/accounts.go`）。
 
 ## 事件
 
 - `be.session.ended.v1`（流 `be.session.ended`，一个分区，记录身份是会话摘要）：会话的每一次结束；边缘经 `Ended` 按位置读，不订阅。
-- `infra.iam.account_status_changed.v1`（流 `infra.iam.account_status`，记录身份是主体，版本是安全状态版本）：载荷是安全记录 `be.security.account_status`；本版只在改密码时发出（`status` 为 `active`），停用与冻结随第 3 项。
-- 以后：水位回声（作为授权的内部来源，安全 03）。
+- `infra.iam.account_status_changed.v1`（流 `infra.iam.account_status`，四个分区，水位来源；记录身份是主体，版本是安全状态版本）：载荷是安全记录 `be.security.account_status`；账号绑定时与改密码时发出（`status` 为 `active`），停用与冻结随第 3 项的 T9。
 
 ## 依赖
 
@@ -71,7 +71,9 @@ Casdoor（基础资源）、数据库与消息系统（必需）；不调用其�
 
 ## 实现状态
 
-3.0.16（底层先行第 2 项 T3）：浏览器登录、会话、带 `be_sv` 的访问令牌、JWKS、开发换取；按签发者加 subject 的绑定；边缘的换取与已结束会话；改密码。没有做的：Casdoor 侧变更（自助页面改密码、控制台停用）的定期全量比较、停用的证据与事件、补取与水位回声、强制登出与重置第二因素（第 3 项）；移动端的刷新令牌；服务令牌。
+3.0.17（底层先行第 3 项 T3）：账号状态成为授权成员的水位来源：账号绑定时也发出状态，启动时给还没发过的账号补发，保存发出的记录，补取与批量读取、快照只许 `infra/authz`。
+
+3.0.16（底层先行第 2 项 T3）：浏览器登录、会话、带 `be_sv` 的访问令牌、JWKS、开发换取；按签发者加 subject 的绑定；边缘的换取与已结束会话；改密码。没有做的：Casdoor 侧变更（自助页面改密码、控制台停用）的定期全量比较、停用的证据与事件、补取前向 Casdoor 拉取、强制登出与重置第二因素（第 3 项）；移动端的刷新令牌；服务令牌。
 
 ## 部署与替换
 

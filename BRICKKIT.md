@@ -7,6 +7,7 @@
 - 给每个会话签发短期访问令牌，令牌带账号的安全状态版本 `be_sv`；只有边缘能换取，经系统面的标准方法 `be.session.v1.SessionService`（线协议 P8.28），浏览器的脚本拿不到令牌；
 - 会话的每一次结束（登出、超时、改密码结束其他会话）写进流 `be.session.ended`，边缘按位置拉取；
 - 改密码：经本组件办理，旧密码由 Casdoor 核对；账号的安全状态版本加一，其他会话结束，当前会话的下一次换取拿到新版本的令牌，账号状态（`be.security.account_status`，带版本）经发件表发出；
+- 账号状态是授权成员的内部来源（水位来源）：账号绑定时、每次安全变更时发出状态；授权成员经系统面补取（标准方法 `be.source.v1.WatermarkService`）、按 ID 批量读取与取快照（`be.source.v1.RecordService`，线协议 P9.30）；
 - 提供本组件签名密钥的公开 JWKS。
 
 令牌的 `sub` 是平台主体（UUIDv7），由本组件把 Casdoor 账号按“签发者加 subject”绑定到平台主体，Casdoor 的用户 ID 不离开本组件；同一邮箱、同一登录名、别的签发者的同一 subject 都不接管已有的主体。令牌只带身份，不带角色或部门：授权只来自授权视图。
@@ -15,7 +16,7 @@
 
 下面几项随后续加入：
 - 在 Casdoor 自己的页面改密码、在控制台停用账号：按 Casdoor 的 `LastChangePasswordTime` 与账号状态定期全量比较发现，结束会话、加版本；
-- 补取与水位回声（作为授权的内部来源）；强制登出与重置第二因素（授权管理的操作）；
+- 补取时先向 Casdoor 拉取截至此刻的账号变更；强制登出与重置第二因素（授权管理的操作）；
 - 移动端的刷新令牌。
 
 Casdoor 给不出可靠的变更序号，本组件按外部来源声明：Casdoor 的操作记录连失败的请求也写，webhook 不带序号、约每 30 秒批量发出。
@@ -92,7 +93,9 @@ Casdoor 给不出可靠的变更序号，本组件按外部来源声明：Casdoo
 - `Exchange`：会话 Cookie 值的摘要（小写十六进制 SHA-256）换访问令牌；会话已结束答 `SESSION_ENDED`；`renew_idle` 为假时不续期空闲超时；
 - `Ended`：按游标分页返回已结束的会话；游标属于别的实例或纪元、或已被清理时回答 `reset`。
 
-事件（`contract/events/`）：`be.session.ended.v1`（流 `be.session.ended`，一个分区）、`infra.iam.account_status_changed.v1`（流 `infra.iam.account_status`，载荷是安全记录 `be.security.account_status`）。
+系统面另有 SDK 自带的两个标准方法，对象是流 `infra.iam.account_status`，调用组件只有授权成员 `infra/authz`：`be.source.v1.WatermarkService/Pull`（补取）、`be.source.v1.RecordService`（`Read` 按主体批量读取账号状态，不认识的主体答“已清理”；`Snapshot` 按主体分页列出全部账号的状态）。读到的内容与事件的载荷是同一份字节。
+
+事件（`contract/events/`）：`be.session.ended.v1`（流 `be.session.ended`，一个分区）、`infra.iam.account_status_changed.v1`（流 `infra.iam.account_status`，四个分区，水位来源：每个事件列出账号的主体；载荷是安全记录 `be.security.account_status`）。
 
 ## 外壳声明
 
