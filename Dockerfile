@@ -10,5 +10,5 @@ FROM alpine:3.24.2
 COPY --from=build /infra-iam-casdoor /infra-iam-casdoor
 # the listening port in a container; BrickKit injects PORT only for mode: local
 ENV PORT=8200
-EXPOSE 8200
+EXPOSE 8200 9200
 ENTRYPOINT ["/infra-iam-casdoor"]

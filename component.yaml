@@ -4,7 +4,7 @@ kind: Component
 metadata:
   id: infra/iam-casdoor
   name: Identity (Casdoor)
-  version: 3.0.18
+  version: 3.0.19
   description: "The identity member in front of Casdoor: browser login with PKCE and a server-side session, short access tokens it signs for the platform principal, its public keys; a development-only password exchange (A101)"
   repository: https://github.com/brickKit/infra-iam-casdoor
 
@@ -14,6 +14,10 @@ deployment:
     context: .
     dockerfile: Dockerfile
   port: 8200
+  extraPorts:
+    - name: grpc
+      port: 9200
+      protocol: grpc
 
 healthCheck:
   type: http
