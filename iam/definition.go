@@ -20,7 +20,7 @@ import (
 // Identity of the component.
 const (
 	ID      = "infra/iam-casdoor"
-	Version = "3.0.29"
+	Version = "3.0.30"
 )
 
 // GRPCPort is the system surface's port (registry/ports.tsv).
@@ -53,7 +53,7 @@ const (
 	OpReplay = "infra.iam.account_status.replay"
 	// OpRecover is a full recovery's checks (be-protocol chapter 14: the recovery tool only).
 	OpRecover = "infra.iam.account_status.recover"
-	Authz    = "infra/authz"
+	Authz     = "infra/authz"
 )
 
 // The account operations of the user surface (security 03's tightening-only operations, security 08's admin

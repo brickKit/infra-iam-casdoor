@@ -36,6 +36,11 @@ type productUser struct {
 	RecoveryCodes          []string `json:"recoveryCodes"`
 }
 
+// hasFactors: the user has a second factor in the product.
+func (u productUser) hasFactors() bool {
+	return u.PreferredMfaType != "" || u.MfaPhoneEnabled || u.MfaEmailEnabled || u.TotpSecret != ""
+}
+
 // off: the product refuses the user's sign-in (forbidden or deleted).
 func (u productUser) off() bool { return u.IsForbidden || u.IsDeleted }
 

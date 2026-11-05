@@ -4,7 +4,9 @@ package iam
 
 import (
 	"context"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/calls"
@@ -17,7 +19,7 @@ import (
 // replay is item 4's T9c (be-protocol P12.19-P12.21, assembly protocol 15's 6.3): the recovery tool replays this
 // member's evidence. An account restored to before its changes gets them again as recorded: a disablement (the
 // security version up, the status out), a forced logout, a re-enable; a record again is reflected; an account that is
-// gone is dangling; a credential tightening is not replayed (6.7 voids the credentials instead).
+// gone is dangling; a credential tightening is checked against Casdoor, not replayed (6.7).
 func (r *iamRun) replay() {
 	t := r.t
 	m, err := calls.NewMember(nil)
@@ -74,6 +76,53 @@ func (r *iamRun) replay() {
 	assert.Equal(t, "active", status)
 	assert.Equal(t, evidence.Dangling, replay(record("account_status", "effective", ids.New().String(),
 		map[string]any{"status": "frozen", "source": "adapter"})))
-	assert.Equal(t, evidence.Unsupported, replay(record("credential_tightening", "effective", p,
-		map[string]any{"kind": "password", "source": "adapter"})))
+	r.credentialChecks(record, replay)
+}
+
+// credentialChecks is 6.7 with Casdoor outside the recovery group (A141; be-protocol P12.20): a credential tightening
+// is not replayed but checked against Casdoor: a password changed by this member holds when Casdoor's last password
+// change is not earlier than the record; a reset of the second factors holds when Casdoor has none now or changed
+// since; a change seen in Casdoor holds when Casdoor has not gone back past what was seen. Not so, or no such account,
+// for review.
+func (r *iamRun) credentialChecks(record func(category, phase, object string, change map[string]any) []byte,
+	replay func([]byte) string) {
+	t := r.t
+	ca := casdoorAdmin(t)
+	const name = "test.it.credcheck"
+	pw, pw2 := "It-Cred-1-"+ids.New().String()[24:], "It-Cred-2-"+ids.New().String()[24:]
+	r.secrets = append(r.secrets, pw, pw2)
+	throwawayUser(t, ca, name, pw)
+	p := ids.New().String()
+	_, err := r.admin.Exec(r.ctx, "INSERT INTO "+itSchema+".iam_account (principal, provider, issuer, provider_subject, username) "+
+		"VALUES ($1, 'casdoor', 'https://replay.test', $2, $3)", p, ids.New().String(), itOrg+"/"+name)
+	require.NoError(t, err)
+	at := func(rec []byte, when time.Time) []byte { // the record again, recorded at another time
+		const was = `"at":"2026-11-05T10:00:00.000000Z"`
+		require.Contains(t, string(rec), was)
+		return []byte(strings.Replace(string(rec), was, `"at":"`+when.UTC().Format("2006-01-02T15:04:05.000000Z")+`"`, 1))
+	}
+	before := time.Now().Add(-time.Minute)
+	resp, err := ca.PostForm(itCasdoor+"/api/set-password", url.Values{"userOwner": {itOrg}, "userName": {name},
+		"newPassword": {pw2}})
+	require.NoError(t, err)
+	resp.Body.Close()
+	password := record("credential_tightening", "effective", p, map[string]any{"kind": "password", "source": "adapter"})
+	assert.Equal(t, evidence.Consistent, replay(at(password, before)), "Casdoor's password changed after the record")
+	assert.Equal(t, evidence.Inconsistent, replay(at(password, time.Now().Add(time.Hour))),
+		"Casdoor's last password change is earlier than the record: Casdoor went back")
+	factors := record("credential_tightening", "intent", p, map[string]any{"kind": "second_factor", "source": "adapter"})
+	assert.Equal(t, evidence.Consistent, replay(at(factors, time.Now().Add(time.Hour))), "no second factor in Casdoor")
+	casdoorUser(r, ca, name, func(u map[string]any) { u["email"], u["mfaEmailEnabled"] = name+"@example.test", true })
+	assert.Equal(t, evidence.Inconsistent, replay(at(factors, time.Now().Add(time.Hour))),
+		"a second factor in Casdoor, not changed since the reset")
+	assert.Equal(t, evidence.Consistent, replay(at(factors, before)), "a factor added after the reset")
+	updated, _ := casdoorUser(r, ca, name, nil)["updatedTime"].(string)
+	require.NotEmpty(t, updated)
+	assert.Equal(t, evidence.Consistent, replay(record("credential_tightening_in_product", "general", p,
+		map[string]any{"kind": "second_factor", "product_updated": updated})), "Casdoor as seen, or later")
+	assert.Equal(t, evidence.Inconsistent, replay(record("credential_tightening_in_product", "general", p,
+		map[string]any{"kind": "password", "product_updated": time.Now().Add(time.Hour).Format(time.RFC3339)})),
+		"Casdoor older than what was seen")
+	assert.Equal(t, evidence.Inconsistent, replay(record("credential_tightening", "effective", ids.New().String(),
+		map[string]any{"kind": "password", "source": "adapter"})), "no such account here")
 }

@@ -18,7 +18,7 @@
 | `iam/reconcile.go` | 与 Casdoor 的全量比较（安全 03）：定期作业与补取的“回声之前”，每个账号在行锁内比较、记证据 |
 | `iam/accountops.go` | 账号操作（受保护的路由）：停用、冻结、启用（先问授权成员 `CheckAccountChange`、确认随状态发出、写 Casdoor 的顺序）、强制登出、重置第二因素 |
 | `iam/evidence.go` | 证据（协议 15）：意图、事务里的结论、没发生就取消、一般记录 |
-| `iam/replay.go` | 整套恢复第 6 步的重放（`ReplayService` 调这里）：账号状态（停用、冻结、控制台停用、回退、重新启用）与强制登出按记录重新施加；凭据收紧不重放（交 6.7） |
+| `iam/replay.go` | 整套恢复第 6 步的重放（`ReplayService` 调这里）：账号状态（停用、冻结、控制台停用、回退、重新启用）与强制登出按记录重新施加；凭据收紧不重放，Casdoor 不在恢复组内，按 6.7 对照 Casdoor 核对（`checkCredential`，线协议 P12.20） |
 | `iam/accounts.go` | 账号状态流的声明（水位来源，补取者与读取者只有 `infra/authz`）与两个读取函数：按主体批量读取、快照 |
 | `iam/migrations/` | 表 |
 | `contract/events/` | 发出的两种事件的 schema（`iam/manifest_test.go` 核对清单） |
