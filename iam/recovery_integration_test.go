@@ -4,7 +4,6 @@ package iam
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/stretchr/testify/assert"
@@ -40,19 +39,13 @@ func (r *iamRun) recovery() {
 	r.restart(map[string]string{"RECOVERY_PHASE": "replaying"})
 	assert.Equal(t, "recovery", r.endReason(bob), "the member started after the advance ends it")
 	// the edge's cursor is of the epoch before the recovery: it is told to reset (it drops every cached token, protocol
-	// 15's 6.6: Alice's end is covered by that), then reads the ends of the new epoch by position
+	// 15's 6.6), then reads on from the new epoch's numbered end; the sweep's ends are in the stream either side of it
 	page := r.ended(r.cursor)
 	assert.True(t, page.GetReset_(), "the recovery's new epoch resets the edge")
-	seen, cursor := map[string]bool{}, page.GetNext()
-	require.Eventually(t, func() bool {
-		page := r.ended(cursor)
-		for _, d := range page.GetSessionDigests() {
-			seen[d] = true
-		}
-		cursor = page.GetNext()
-		return seen[digest(bob)]
-	}, time.Minute, 200*time.Millisecond, "the sweep's end in the ended stream") // the stopped member's forwarding
-	// lease of the partition runs out first (be-sdk-go does not give it up on a graceful stop: up to its lease and a poll)
+	var written int
+	require.NoError(t, r.admin.QueryRow(ctx, "SELECT count(*) FROM "+itSchema+".be_outbox WHERE stream = 'be.session.ended' "+
+		"AND record_id = $1", digest(bob)).Scan(&written))
+	assert.Equal(t, 1, written, "the sweep's end written to the ended stream")
 	assert.Zero(t, casdoorSessions(r, ca, "test.bob"), "the same person's sessions in Casdoor")
 	_, err = r.exchange(bob, true)
 	assert.ErrorContains(t, err, errs.ReasonMaintenance, "no token while the recovery runs (the caller's side wraps it as "+
