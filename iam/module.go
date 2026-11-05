@@ -150,8 +150,9 @@ func (m *Module) endSessionsBeforeRecovery(ctx context.Context) error {
 func (m *Module) Routes(r *httpx.Routes) error {
 	r.Add(httpx.Route{Method: "GET", Path: "/api/iam/login", Public: true, Handle: m.login})
 	r.Add(httpx.Route{Method: "GET", Path: "/api/iam/callback", Public: true, Handle: m.callback})
-	r.Add(httpx.Route{Method: "POST", Path: "/api/iam/logout", Public: true, Handle: m.logout})
-	r.Add(httpx.Route{Method: "POST", Path: "/api/iam/password", Public: true, Handle: m.changePassword})
+	// ending one's session and changing one's password stay open while the deployment is open read-only (P1.23)
+	r.Add(httpx.Route{Method: "POST", Path: "/api/iam/logout", Public: true, ReadOnlyOpen: true, Handle: m.logout})
+	r.Add(httpx.Route{Method: "POST", Path: "/api/iam/password", Public: true, ReadOnlyOpen: true, Handle: m.changePassword})
 	r.Add(httpx.Route{Method: "GET", Path: "/api/iam/jwks", Public: true, Handle: m.jwks})
 	if m.dev {
 		r.Add(httpx.Route{Method: "POST", Path: "/api/iam/dev/token", Public: true, Handle: m.devToken})

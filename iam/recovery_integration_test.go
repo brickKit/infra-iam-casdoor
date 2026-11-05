@@ -51,6 +51,13 @@ func (r *iamRun) recovery() {
 	assert.ErrorContains(t, err, errs.ReasonMaintenance, "no token while the recovery runs (the caller's side wraps it as "+
 		"a dependency unavailable)")
 	assert.Contains(t, r.logs.String(), `"event":"sessions_ended_by_recovery"`)
+
+	// the read-only opening (P1.23): people log in again and get tokens
+	r.restart(map[string]string{"RECOVERY_PHASE": "read_only"})
+	again, _ := browserLogin(t, "test.alice", r.password, "")
+	r.secrets = append(r.secrets, again.Value)
+	_, err = r.exchange(again, true)
+	assert.NoError(t, err, "tokens again once open read-only")
 }
 
 // endReason is a session's end reason ("" while it is live).

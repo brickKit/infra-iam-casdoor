@@ -39,7 +39,7 @@ func (s *sessions) Exchange(ctx context.Context, in *sessionpb.ExchangeRequest) 
 	if in.GetSessionDigest() == "" {
 		return nil, errs.New(errs.ReasonRequestInvalid, "session_digest is required")
 	}
-	if s.m.rt.RecoveryPhase() != "" { // no token while a full recovery runs (be-protocol P1.23)
+	if p := s.m.rt.RecoveryPhase(); p != "" && p != "read_only" { // no token while a full recovery runs, until the read-only opening (P1.23)
 		return nil, errs.New(errs.ReasonMaintenance, "a full recovery is running")
 	}
 	a, until, ok, err := s.m.store.use(ctx, in.GetSessionDigest(), s.m.idle, s.m.absolute, in.GetRenewIdle())

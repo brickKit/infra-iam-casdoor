@@ -4,7 +4,7 @@ kind: Component
 metadata:
   id: infra/iam-casdoor
   name: Identity (Casdoor)
-  version: 3.0.27
+  version: 3.0.28
   description: "The identity member in front of Casdoor: browser login with PKCE and a server-side session, short access tokens it signs for the platform principal, its public keys; a development-only password exchange (A101)"
   repository: https://github.com/brickKit/infra-iam-casdoor
 
@@ -47,6 +47,8 @@ configSchema:
         - frozen
         - redelivering
         - replaying
+        - verifying
+        - read_only
       type: string
     ALERT_WEBHOOK_URL:
       type: string
