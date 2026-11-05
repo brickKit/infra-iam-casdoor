@@ -24,7 +24,7 @@ func (s store) intent(ctx context.Context, category, principal string, version i
 	p, err := s.ev.Intent(ctx, category, principal, evidence.Object{Type: AccountType, ID: principal,
 		Version: strconv.FormatInt(version, 10)}, change)
 	if err != nil {
-		return nil // the intent could not be sealed: the change goes on, its absence is logged by the writer
+		return nil // the intent could not be sealed: the change goes on; the writer logged it (evidence_intent_unsealed)
 	}
 	return p
 }
