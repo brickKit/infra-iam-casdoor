@@ -4,7 +4,7 @@ kind: Component
 metadata:
   id: infra/iam-casdoor
   name: Identity (Casdoor)
-  version: 3.0.22
+  version: 3.0.23
   description: "The identity member in front of Casdoor: browser login with PKCE and a server-side session, short access tokens it signs for the platform principal, its public keys; a development-only password exchange (A101)"
   repository: https://github.com/brickKit/infra-iam-casdoor
 
@@ -41,6 +41,20 @@ events:
 
 configSchema:
   properties:
+    ALERT_WEBHOOK_URL:
+      type: string
+    RUN_PROFILE_ACCESS_KEY:
+      type: string
+    RUN_PROFILE_BUCKET:
+      type: string
+    RUN_PROFILE_REGION:
+      description: SDK default us-east-1
+      type: string
+    RUN_PROFILE_SECRET_KEY:
+      secret: true
+      type: string
+    RUN_PROFILE_URL:
+      type: string
     AUDIT_GRPC_URL:
       description: 'process-level: the same for every member of a shell'
       type: string

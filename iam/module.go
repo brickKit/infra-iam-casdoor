@@ -43,7 +43,7 @@ func New(rt *runtime.Runtime) (*Module, error) {
 		return nil, errs.New(errs.ReasonRequestInvalid, "DEPLOYMENT_ID is required: the tokens' audience is be:deployment:<DEPLOYMENT_ID>")
 	}
 	cd, _ := rt.HTTPAt("casdoor", cfg.String("CASDOOR_URL"))
-	m := &Module{rt: rt, store: store{db: rt.DB, events: rt.Events, deployment: cfg.String("DEPLOYMENT_ID")},
+	m := &Module{rt: rt, store: store{db: rt.DB, events: rt.Events, deployment: cfg.String("DEPLOYMENT_ID"), ev: rt.Evidence},
 		impl: cfg.String("IMPLEMENTATION_INSTANCE"), issuer: cfg.String("IAM_TOKEN_ISSUER"),
 		audience: "be:deployment:" + cfg.String("DEPLOYMENT_ID"), ttl: cfg.Duration("IAM_ACCESS_TOKEN_TTL"),
 		idle: cfg.Duration("IAM_SESSION_IDLE"), absolute: cfg.Duration("IAM_SESSION_ABSOLUTE"),

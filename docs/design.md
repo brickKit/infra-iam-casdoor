@@ -73,6 +73,13 @@ Casdoor（基础资源）、数据库与消息系统（必需）；授权成员�
 
 ## 实现状态
 
+3.0.23（底层先行第 4 项 T6b）：证据（协议 15 的证据表，`evidence.go`）：
+- 经本组件的停用与冻结、改密码、重置第二因素、强制登出两段写：意图在本地变更与调用 Casdoor 之前，结论在本地变更的事务里，没发生（Casdoor 拒绝、版本变了）就写“已取消”；
+- 启用与解冻写一般记录（类别“账号重新启用”，带确认）；
+- 比较发现的控制台停用也两段写：行锁之前不加锁先看一次，在锁下确认后写结论；
+- 比较发现的回退（Casdoor 里又被启用）与产品侧的密码或第二因素变更写一般记录。
+- 组件定义打开 `Evidence`（运行档案的键）。原来叫 `evidence` 的本地状态证据函数改名为 `statusEvidence`。
+
 3.0.22（底层先行第 3 项 T9c）：账号操作（`accountops.go`，迁移 0005）：停用、冻结、启用、强制登出、重置第二因素，受授权保护，资源 `infra.iam.account`。状态变更先问授权成员（A134），对象是管理员时写错误级日志；确认存进 `status_confirmation`，随这次的状态记录发出，之后的安全变更清掉它；证据记下请求者与确认（`requested_by`、`confirmation`，来源 `adapter`）。顺序：停用与冻结先本地后 Casdoor，启用先栅栏（`local_change_at`）、Casdoor、再本地；比较对一分钟内本组件改过状态的账号只跳过状态一项。强制登出结束本组件与 Casdoor 的全部会话（`get-sessions` 后逐个 `delete-session`）；重置第二因素经 Casdoor 的 `delete-mfa`，把新状态记成比较的基线。`IAM_T_TIGHT` 起始 1 小时。
 
 3.0.21（底层先行第 3 项 T9b）：与 Casdoor 的全量比较（`reconcile.go`，`IAM_PULL_INTERVAL` 起始 1 分钟，另在授权成员每次补取的回声之前，SDK 的 `Watermark.Before`，P9.16）：控制台停用照常生效并记本地证据（表 `iam_status_evidence`，产品坐标是 Casdoor 的 `updatedTime`；协议 15 的证据存储随第 4 项）；本组件停用的账号在 Casdoor 被启用时判为回退，在 Casdoor 里重新禁用并告警，本组件也拒绝它登录；Casdoor 里改密码（`lastChangePasswordTime`）或改第二因素（几个字段的摘要）是安全变更；本组件自己改的密码把新时刻记成基线，下一次比较不再计（读不到时宁可多计一次）。账号有状态与安全标记两列，状态记录按它们写。比较只看配置的签发者绑定的账号。读写 Casdoor 用登录应用的凭据（Basic，SDK 的 `calls.Request.Credential`）。控制台里停用管理员时的严重告警：比较这一侧还不知道对象是不是授权管理员（只有经本组件办理的状态变更从 `CheckAccountChange` 得知），见未决问题。

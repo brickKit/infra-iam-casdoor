@@ -109,6 +109,11 @@ func (m *Module) changePassword(c *httpx.Context) error {
 	if !ok {
 		return errs.New(errs.ReasonSessionEnded, "no live session")
 	}
+	// a credential tightening: its intent before Casdoor is asked, its conclusion with the change (item 4 T6b)
+	p := m.store.intent(c.Ctx(), "credential_tightening", a.principal, a.securityVersion,
+		map[string]any{"kind": "password", "source": "adapter"})
+	done := false
+	defer func() { settle(c.Ctx(), p, done) }()
 	if err := m.casdoor.setPassword(c.Ctx(), a.username, in.OldPassword, in.NewPassword); err != nil {
 		if e := errs.From(err); e.Reason == errs.ReasonRequestInvalid {
 			m.rt.Logger.Info("a password change was refused", "principal", a.principal,
@@ -118,9 +123,10 @@ func (m *Module) changePassword(c *httpx.Context) error {
 	}
 	// Casdoor has the new password now; if this fails, the pull of item 3 finds the change by Casdoor's
 	// LastChangePasswordTime and ends the sessions then
-	if _, err := m.store.securityChange(c.Ctx(), a.principal, "password", h); err != nil {
+	if _, err := m.store.securityChange(c.Ctx(), a.principal, "password", h, effective(p)); err != nil {
 		return err
 	}
+	done = true
 	m.ownPassword(c.Ctx(), a)
 	return c.NoContent(http.StatusNoContent)
 }

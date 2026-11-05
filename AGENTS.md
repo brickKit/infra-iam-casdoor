@@ -17,6 +17,7 @@
 | `iam/product.go` | 对 Casdoor 的管理一侧：读组织的用户、禁用与允许一个用户、结束一个用户的会话、删除第二因素（登录应用的凭据，Basic） |
 | `iam/reconcile.go` | 与 Casdoor 的全量比较（安全 03）：定期作业与补取的“回声之前”，每个账号在行锁内比较、记证据 |
 | `iam/accountops.go` | 账号操作（受保护的路由）：停用、冻结、启用（先问授权成员 `CheckAccountChange`、确认随状态发出、写 Casdoor 的顺序）、强制登出、重置第二因素 |
+| `iam/evidence.go` | 证据（协议 15）：意图、事务里的结论、没发生就取消、一般记录 |
 | `iam/accounts.go` | 账号状态流的声明（水位来源，补取者与读取者只有 `infra/authz`）与两个读取函数：按主体批量读取、快照 |
 | `iam/migrations/` | 表 |
 | `contract/events/` | 发出的两种事件的 schema（`iam/manifest_test.go` 核对清单） |

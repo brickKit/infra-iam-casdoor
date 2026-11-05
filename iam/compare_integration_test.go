@@ -108,6 +108,9 @@ func (r *iamRun) comparison() {
 	st, ev := r.statusOf(p)
 	assert.Equal(t, "disabled", st)
 	assert.Equal(t, []string{"console"}, ev)
+	console := r.evidence(p, "account_status", "effective", 1)
+	require.Len(t, console["intent"], 1, "the intent before the comparison's transaction")
+	assert.Equal(t, "console", console["effective"][0]["change"].(map[string]any)["source"])
 	_, err = r.exchange(session, true)
 	assert.True(t, errs.Is(err, "be", errs.ReasonSessionEnded), "the session ended: %v", err)
 	st, _ = r.statusOf(elsewhere)
@@ -126,6 +129,8 @@ func (r *iamRun) comparison() {
 	st, ev = r.statusOf(p)
 	assert.Equal(t, "disabled", st)
 	assert.Equal(t, []string{"console", "rollback"}, ev)
+	rolled := r.evidence(p, "account_status", "general", 1)["general"][0]
+	assert.Equal(t, "rollback", rolled["change"].(map[string]any)["source"], "an enable seen in Casdoor is recorded too")
 	assert.EqualValues(t, 2, r.version(p), "the status did not change here")
 	resp, _ = send(t, "POST", itBase+"/api/iam/dev/token", map[string]string{"username": name, "password": pw})
 	assert.Equal(t, 401, resp.StatusCode, "a disabled account does not sign in")
@@ -143,6 +148,8 @@ func (r *iamRun) comparison() {
 	time.Sleep(1100 * time.Millisecond) // Casdoor's times have one-second precision
 	require.NoError(t, r.pullAsAuthz())
 	assert.EqualValues(t, 2, r.version(q), "the password changed in Casdoor")
+	inProduct := r.evidence(q, "credential_tightening_in_product", "general", 1)["general"][0]
+	assert.Equal(t, "password", inProduct["change"].(map[string]any)["kind"])
 	_, err = r.exchange(s2, true)
 	assert.True(t, errs.Is(err, "be", errs.ReasonSessionEnded), "%v", err)
 	casdoorUser(r, ca, other, func(u map[string]any) { u["email"], u["mfaEmailEnabled"] = other+"@example.test", true })

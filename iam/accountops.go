@@ -10,6 +10,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/calls"
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/errs"
+	"github.com/brickKit/be-sdk-go/v3/evidence"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/identity"
 	"github.com/brickKit/be-sdk-go/v3/ids"
@@ -129,6 +130,23 @@ func (m *Module) statusHTTP(c *httpx.Context, op, target string) error {
 			"principal", a.principal, "status", target, "requested_by", requester)
 	}
 	confirmation := in.Confirmation
+	change := map[string]any{"status": target, "requested_by": requester, "source": "adapter"}
+	if mark != "none" {
+		change["security_mark"] = mark
+	}
+	if confirmation != "" {
+		change["confirmation"] = confirmation
+	}
+	var p *evidence.Pending
+	after := func(ctx context.Context, tx db.Tx) error { // a re-enable: a general record (item 4 T6b)
+		return m.store.general(ctx, tx, "account_reenable", a.principal, a.securityVersion, change)
+	}
+	if target != "active" { // a disablement or freeze: its intent before this member's change
+		p = m.store.intent(ctx, "account_status", a.principal, a.securityVersion, change)
+		after = effective(p)
+	}
+	done := false
+	defer func() { settle(ctx, p, done) }()
 	if target == "active" {
 		if err := m.store.fence(ctx, a.principal); err != nil {
 			return err
@@ -137,10 +155,11 @@ func (m *Module) statusHTTP(c *httpx.Context, op, target string) error {
 			return err
 		}
 	}
-	version, err := m.store.setStatus(ctx, a.principal, target, mark, confirmation, requester, a.securityVersion, reasonFor(target))
+	version, err := m.store.setStatus(ctx, a.principal, target, mark, confirmation, requester, a.securityVersion, reasonFor(target), after)
 	if err != nil {
 		return err
 	}
+	done = true
 	a.status, a.mark, a.securityVersion = target, mark, version
 	if target != "active" {
 		if err := m.casdoor.setForbidden(ctx, a.username, true); err != nil {
@@ -185,9 +204,13 @@ func (m *Module) forceLogoutHTTP(c *httpx.Context) error {
 	if err != nil {
 		return err
 	}
-	if a.securityVersion, err = m.store.securityChange(ctx, a.principal, "forced", ""); err != nil {
+	p := m.store.intent(ctx, "session_revocation", a.principal, a.securityVersion, map[string]any{"kind": "forced_logout"})
+	done := false
+	defer func() { settle(ctx, p, done) }()
+	if a.securityVersion, err = m.store.securityChange(ctx, a.principal, "forced", "", effective(p)); err != nil {
 		return err
 	}
+	done = true
 	if err := m.casdoor.endSessions(ctx, a.username); err != nil {
 		return err
 	}
@@ -202,6 +225,10 @@ func (m *Module) resetFactorsHTTP(c *httpx.Context) error {
 	if err != nil {
 		return err
 	}
+	p := m.store.intent(ctx, "credential_tightening", a.principal, a.securityVersion, map[string]any{"kind": "second_factor",
+		"source": "adapter"})
+	done := false
+	defer func() { settle(ctx, p, done) }()
 	if err := m.casdoor.deleteFactors(ctx, a.username); err != nil {
 		return err
 	}
@@ -209,9 +236,10 @@ func (m *Module) resetFactorsHTTP(c *httpx.Context) error {
 	if err != nil {
 		return err
 	}
-	if a.securityVersion, err = m.store.resetFactors(ctx, a.principal, u.secondFactors()); err != nil {
+	if a.securityVersion, err = m.store.resetFactors(ctx, a.principal, u.secondFactors(), effective(p)); err != nil {
 		return err
 	}
+	done = true
 	return m.answerAccount(c, a)
 }
 
@@ -240,7 +268,7 @@ func (s store) fence(ctx context.Context, principal string) error {
 // (another change since: CHANGE_REVISION_STALE, ask again), one security change carrying the confirmation, with the
 // evidence of who asked.
 func (s store) setStatus(ctx context.Context, principal, status, mark, confirmation, requester string, on int64,
-	reason string) (int64, error) {
+	reason string, after func(context.Context, db.Tx) error) (int64, error) {
 	var version int64
 	err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
 		var now int64
@@ -262,22 +290,27 @@ func (s store) setStatus(ctx context.Context, principal, status, mark, confirmat
 		_, err = tx.Exec(ctx, `INSERT INTO iam_status_evidence (id, principal, status, source, security_version, requested_by,
 			confirmation) VALUES ($1, $2, $3, 'adapter', $4, $5::text::uuid, NULLIF($6, '')::uuid)`, ids.New(), principal, status,
 			version, requester, confirmation)
-		return err
+		if err != nil {
+			return err
+		}
+		return run(ctx, tx, after) // the evidence, in the same transaction
 	})
 	return version, err
 }
 
 // resetFactors is the reset's security change here, with Casdoor's new second-factor state as the baseline.
-func (s store) resetFactors(ctx context.Context, principal, digest string) (int64, error) {
+func (s store) resetFactors(ctx context.Context, principal, digest string, after func(context.Context, db.Tx) error) (int64, error) {
 	var version int64
 	err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
 		var err error
 		if version, err = s.change(ctx, tx, principal, "second_factor", ""); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, "UPDATE iam_account SET product_mfa = $2 WHERE principal = $1 AND product_mfa IS NOT NULL",
-			principal, digest)
-		return err
+		if _, err = tx.Exec(ctx, "UPDATE iam_account SET product_mfa = $2 WHERE principal = $1 AND product_mfa IS NOT NULL",
+			principal, digest); err != nil {
+			return err
+		}
+		return run(ctx, tx, after)
 	})
 	return version, err
 }

@@ -20,7 +20,7 @@ import (
 // Identity of the component.
 const (
 	ID      = "infra/iam-casdoor"
-	Version = "3.0.22"
+	Version = "3.0.23"
 )
 
 // GRPCPort is the system surface's port (registry/ports.tsv).
@@ -143,8 +143,8 @@ func Keys() []config.Key {
 func Definition() component.Definition {
 	ref := &pullRef{} // the account stream's step before the echo reaches the module through it
 	return component.Definition{ID: ID, Version: Version, Keys: Keys(), Migrations: migrations(), GRPCPort: GRPCPort,
-		Streams: []events.Stream{{Name: StreamEnded, Partitions: 1}, accountStream(ref)},
-		Authz:   Definitions(),
+		Streams: []events.Stream{{Name: StreamEnded, Partitions: 1}, accountStream(ref)}, Evidence: true,
+		Authz: Definitions(),
 		New: func(rt *runtime.Runtime) (component.Module, error) {
 			m, err := New(rt)
 			if err == nil {

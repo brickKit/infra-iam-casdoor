@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/brickKit/be-sdk-go/v3/db"
+	"github.com/brickKit/be-sdk-go/v3/evidence"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/work"
 	"github.com/jackc/pgx/v5"
@@ -97,7 +98,14 @@ func (m *Module) reconcile(ctx context.Context) error {
 			if !ok {
 				u = productUser{ID: a.subject, IsDeleted: true} // gone from Casdoor: it signs in no more
 			}
-			rollback, err := m.store.compare(ctx, a.principal, u, readAt, m.rt.Logger)
+			// a console disablement is a tightening: its intent before the comparison's transaction, read without a lock
+			// first; the transaction concludes it only if the change is still there under the row lock (item 4 T6b)
+			p, err := m.store.consoleIntent(ctx, a.principal, u)
+			if err != nil {
+				return err
+			}
+			rollback, concluded, err := m.store.compare(ctx, a.principal, u, readAt, m.rt.Logger, p)
+			settle(ctx, p, concluded)
 			if err != nil {
 				return err
 			}
@@ -128,9 +136,9 @@ func (m *Module) pull(ctx context.Context, _ *work.Run) error { return m.reconci
 func (s store) compare(ctx context.Context, principal string, u productUser, readAt time.Time, log interface {
 	Warn(string, ...any)
 	Error(string, ...any)
-}) (rollback bool, err error) {
+}, p *evidence.Pending) (rollback, concluded bool, err error) {
 	err = s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-		rollback = false
+		rollback, concluded = false, false
 		var status string
 		var forbidden *bool
 		var passwordAt, mfa *string
@@ -153,7 +161,11 @@ func (s store) compare(ctx context.Context, principal string, u productUser, rea
 			log.Error("an account disabled here is allowed in Casdoor (a product rollback or a console re-enable): it is "+
 				"forbidden there again; only this member re-enables", "event", "account_enabled_in_product",
 				"principal", principal, "product_updated", u.UpdatedTime)
-			if err := evidence(ctx, tx, principal, status, "rollback", u.UpdatedTime); err != nil {
+			if err := statusEvidence(ctx, tx, principal, status, "rollback", u.UpdatedTime); err != nil {
+				return err
+			}
+			if err := s.general(ctx, tx, "account_status", principal, 0, map[string]any{"status": status, "source": "rollback",
+				"product_updated": u.UpdatedTime}); err != nil { // an enable seen in Casdoor is recorded too
 				return err
 			}
 		case !first && passwordAt != nil && *passwordAt != u.LastChangePasswordTime:
@@ -174,16 +186,46 @@ func (s store) compare(ctx context.Context, principal string, u productUser, rea
 			return err
 		}
 		if reason == "disabled" {
-			return evidence(ctx, tx, principal, next, "console", u.UpdatedTime, version)
+			if err := statusEvidence(ctx, tx, principal, next, "console", u.UpdatedTime, version); err != nil {
+				return err
+			}
+			if p != nil {
+				concluded = true
+				return p.Effective(ctx, tx)
+			}
+			return nil
 		}
-		return nil
+		// a password or second-factor change made in Casdoor itself (item 4 T6b)
+		return s.general(ctx, tx, "credential_tightening_in_product", principal, version-1, map[string]any{"kind": reason,
+			"product_updated": u.UpdatedTime})
 	})
-	return rollback, err
+	if err != nil {
+		concluded = false
+	}
+	return rollback, concluded, err
 }
 
-// evidence records a status this member made or saw, with the product coordinate (protocol 15, kept here until the
+// consoleIntent is the intent of a console disablement the comparison is about to take in: an active account that
+// Casdoor refuses (read without a lock; the transaction confirms it).
+func (s store) consoleIntent(ctx context.Context, principal string, u productUser) (*evidence.Pending, error) {
+	if s.ev == nil || !u.off() {
+		return nil, nil
+	}
+	var status string
+	var version int64
+	if err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		return tx.QueryRow(ctx, "SELECT status, security_version FROM iam_account WHERE principal = $1", principal).
+			Scan(&status, &version)
+	}); err != nil || status != "active" {
+		return nil, err
+	}
+	return s.intent(ctx, "account_status", principal, version, map[string]any{"status": "disabled", "source": "console",
+		"product_updated": u.UpdatedTime}), nil
+}
+
+// statusEvidence records a status this member made or saw, with the product coordinate (protocol 15, kept here until the
 // evidence store of foundations item 4); the version is the account's at that moment (the current one when absent).
-func evidence(ctx context.Context, tx db.Tx, principal, status, source, coordinate string, version ...int64) error {
+func statusEvidence(ctx context.Context, tx db.Tx, principal, status, source, coordinate string, version ...int64) error {
 	_, err := tx.Exec(ctx, `INSERT INTO iam_status_evidence (id, principal, status, source, product_updated, security_version)
 		SELECT $1, principal, $3, $4, $5, coalesce($6, security_version) FROM iam_account WHERE principal = $2`,
 		ids.New(), principal, status, source, nullable(coordinate), optional(version))

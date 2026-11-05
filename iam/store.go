@@ -9,6 +9,7 @@ import (
 
 	"github.com/brickKit/be-sdk-go/v3/db"
 	"github.com/brickKit/be-sdk-go/v3/events"
+	"github.com/brickKit/be-sdk-go/v3/evidence"
 	"github.com/brickKit/be-sdk-go/v3/ids"
 	"github.com/brickKit/be-sdk-go/v3/records"
 	"github.com/jackc/pgx/v5"
@@ -21,6 +22,7 @@ type store struct {
 	db         *db.DB
 	events     *events.Producer
 	deployment string
+	ev         *evidence.Writer // the evidence (evidence.go); nil without a database
 }
 
 var errNoLogin = errors.New("no such login in flight")
@@ -185,12 +187,14 @@ func (s store) end(ctx context.Context, idHash, reason string) error {
 // second factors): its version goes up by one, every live session but keep ends with reason, and the account's status
 // goes out with the new version, all in one transaction (P8.27). keep is the session that made the change ("" for
 // none): its next exchange gets a token of the new version.
-func (s store) securityChange(ctx context.Context, principal, reason, keep string) (int64, error) {
+func (s store) securityChange(ctx context.Context, principal, reason, keep string, after func(context.Context, db.Tx) error) (int64, error) {
 	var version int64
 	err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
 		var err error
-		version, err = s.change(ctx, tx, principal, reason, keep)
-		return err
+		if version, err = s.change(ctx, tx, principal, reason, keep); err != nil {
+			return err
+		}
+		return run(ctx, tx, after) // the evidence's conclusion, in the same transaction
 	})
 	return version, err
 }

@@ -46,6 +46,28 @@ func (r *iamRun) lastStatus(principal string) map[string]any {
 	return rec
 }
 
+// evidence waits until the evidence store keeps a record of a category about a principal in a phase, and returns
+// the records of that category by phase (item 4 T6b: assembly protocol 15's evidence table).
+func (r *iamRun) evidence(principal, category, phase string, at int) map[string][]map[string]any {
+	r.t.Helper()
+	var out map[string][]map[string]any
+	ok := assert.Eventually(r.t, func() bool {
+		out = map[string][]map[string]any{}
+		for _, raw := range r.w.Evidence() {
+			var rec map[string]any
+			if json.Unmarshal(raw, &rec) != nil || rec["subject"] != principal || rec["category"] != category {
+				continue
+			}
+			out[rec["phase"].(string)] = append(out[rec["phase"].(string)], rec)
+		}
+		return len(out[phase]) >= at
+	}, 10*time.Second, 100*time.Millisecond, "%s %s %s (at least %d)", principal, category, phase, at)
+	if !ok {
+		r.t.FailNow()
+	}
+	return out
+}
+
 // casdoorSessions lists the Casdoor sessions of a user (any application).
 func casdoorSessions(r *iamRun, ca *http.Client, name string) int {
 	_, b := sendWith(r.t, ca, "GET", itCasdoor+"/api/get-sessions?owner="+itOrg, nil)
@@ -131,6 +153,11 @@ func (r *iamRun) accountOperations() {
 	st, ev := r.statusOf(p)
 	assert.Equal(t, "disabled", st)
 	assert.Equal(t, []string{"adapter"}, ev)
+	recs := r.evidence(p, "account_status", "effective", 1) // the intent before, the conclusion with the change
+	require.Len(t, recs["intent"], 1)
+	assert.Equal(t, recs["intent"][0]["id"], recs["effective"][0]["id"])
+	assert.Equal(t, "disabled", recs["effective"][0]["change"].(map[string]any)["status"])
+	assert.NotNil(t, recs["effective"][0]["position"])
 	// the comparison right after it is no rollback, and the same request again changes nothing
 	require.NoError(t, r.pullAsAuthz())
 	code, out = r.op(sectest.Alice, "POST", path("disable"), map[string]any{})
@@ -184,6 +211,8 @@ func (r *iamRun) accountOperations() {
 	assert.EqualValues(t, v+2, r.version(p))
 	assert.Equal(t, false, casdoorUser(r, ca, name, nil)["isForbidden"])
 	assert.Equal(t, confirmation, r.lastStatus(p)["confirmation"])
+	reenable := r.evidence(p, "account_reenable", "general", 1)["general"][0]
+	assert.Equal(t, confirmation, reenable["change"].(map[string]any)["confirmation"], "the re-enable's evidence")
 	assert.Contains(t, r.logs.String(), `"event":"admin_account_status"`, "an admin's account status change is a severe alert")
 	assert.Equal(t, 200, signIn())
 	require.NoError(t, r.pullAsAuthz())
@@ -201,6 +230,7 @@ func (r *iamRun) accountOperations() {
 	_, err = r.exchange(session, true)
 	assert.True(t, errs.Is(err, "be", errs.ReasonSessionEnded), "%v", err)
 	assert.Zero(t, casdoorSessions(r, ca, name), "Casdoor's sessions ended")
+	r.evidence(p, "session_revocation", "effective", 1)
 	_, carried := r.lastStatus(p)["confirmation"]
 	assert.False(t, carried, "a confirmation belongs to the change it confirmed")
 
@@ -214,6 +244,10 @@ func (r *iamRun) accountOperations() {
 	assert.Equal(t, false, casdoorUser(r, ca, name, nil)["mfaEmailEnabled"])
 	require.NoError(t, r.pullAsAuthz())
 	assert.EqualValues(t, v+5, r.version(p), "not counted twice")
+	reset := r.evidence(p, "credential_tightening", "effective", 1)
+	assert.Equal(t, "second_factor", reset["effective"][0]["change"].(map[string]any)["kind"])
+	product := r.evidence(p, "credential_tightening_in_product", "general", 1)
+	assert.Len(t, product["general"], 1, "the factor added in Casdoor is one record; the reset is not counted there again")
 
 	// frozen; a console re-enable within a minute of this member's own change is compared at a later run, then
 	// forbidden again (the member's writes in flight are never taken for a rollback)
