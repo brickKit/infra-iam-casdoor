@@ -10,6 +10,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
 	"github.com/brickKit/be-sdk-go/v3/work"
+	authzv3 "github.com/brickKit/contract-infra-authz/v3/gen/go/be/authz/v3"
 )
 
 // CookieName is the browser session's cookie: a random secret, HttpOnly, SameSite=Lax (protocol 20).
@@ -31,6 +32,8 @@ type Module struct {
 	after    string
 	dev      bool
 	pullEach time.Duration // P_pull
+	tight    time.Duration // T_tight
+	authz    authzv3.AccountServiceClient
 }
 
 // New builds the module from its runtime.
@@ -45,10 +48,16 @@ func New(rt *runtime.Runtime) (*Module, error) {
 		audience: "be:deployment:" + cfg.String("DEPLOYMENT_ID"), ttl: cfg.Duration("IAM_ACCESS_TOKEN_TTL"),
 		idle: cfg.Duration("IAM_SESSION_IDLE"), absolute: cfg.Duration("IAM_SESSION_ABSOLUTE"),
 		secure: cfg.Bool("IAM_COOKIE_SECURE"), after: cfg.String("IAM_AFTER_LOGIN_URL"), dev: cfg.Bool("IAM_DEV_EXCHANGE"),
-		pullEach: cfg.Duration("IAM_PULL_INTERVAL")}
+		pullEach: cfg.Duration("IAM_PULL_INTERVAL"), tight: cfg.Duration("IAM_T_TIGHT")}
 	if m.pullEach <= 0 {
 		return nil, errs.New(errs.ReasonRequestInvalid, "IAM_PULL_INTERVAL must be positive")
 	}
+	// the authorization member's system surface: an account's status change is asked there first (A134)
+	conn, ok := rt.GRPCAt(Authz, cfg.String("AUTHZ_GRPC_URL"))
+	if !ok {
+		return nil, errs.New(errs.ReasonRequestInvalid, "AUTHZ_GRPC_URL cannot be dialled: account status changes are asked there")
+	}
+	m.authz = authzv3.NewAccountServiceClient(conn)
 	issuerOfIDTokens := cfg.String("CASDOOR_ISSUER")
 	if issuerOfIDTokens == "" {
 		issuerOfIDTokens = cfg.String("CASDOOR_PUBLIC_URL")
@@ -101,8 +110,8 @@ func (m *Module) Jobs(j *work.Jobs) error {
 func (m *Module) Start(ctx context.Context) error { return m.store.adopt(ctx, m.casdoor.issuer) }
 
 // Routes registers the login, the logout, the password change, the public keys and, in development deployments, the
-// password exchange. They are all public: they are how a credential is obtained in the first place, and the session
-// cookie protects the others. The session's token is not among them: only the edge exchanges, on the system surface
+// password exchange: public, they are how a credential is obtained in the first place, and the session cookie
+// protects the others; and the account operations, protected (accountops.go). The session's token is not among them: only the edge exchanges, on the system surface
 // (Services), so a page's script never reads a token (protocol 20 UI04).
 func (m *Module) Routes(r *httpx.Routes) error {
 	r.Add(httpx.Route{Method: "GET", Path: "/api/iam/login", Public: true, Handle: m.login})
@@ -113,6 +122,7 @@ func (m *Module) Routes(r *httpx.Routes) error {
 	if m.dev {
 		r.Add(httpx.Route{Method: "POST", Path: "/api/iam/dev/token", Public: true, Handle: m.devToken})
 	}
+	m.routesForAccounts(r)
 	return nil
 }
 

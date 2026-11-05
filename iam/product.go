@@ -15,7 +15,8 @@ import (
 )
 
 // The management side towards Casdoor (security 03, "身份成员由外部产品承载时"): the users of an organization as they
-// are now, for the full comparison, and the one write this member makes there on its own, forbidding a user again.
+// are now, for the full comparison; forbidding or allowing a user (the comparison's rollback, the account operations);
+// ending a user's Casdoor sessions (a forced logout) and removing the second factors (their reset).
 // The login application's client credentials authorize both (Casdoor 4.1.0: an application's credentials manage
 // the users of its organization), sent as Basic, never in the URL.
 
@@ -96,6 +97,60 @@ func (c *casdoor) user(ctx context.Context, username string) (map[string]any, er
 		return nil, errs.New(errs.ReasonDependencyUnavailable, "casdoor: no user "+username).With("dependency", "casdoor")
 	}
 	return u, nil
+}
+
+// productUser reads one user as the comparison sees it.
+func (c *casdoor) productUser(ctx context.Context, username string) (productUser, error) {
+	var out productUser
+	u, err := c.user(ctx, username)
+	if err != nil {
+		return out, err
+	}
+	raw, _ := json.Marshal(u)
+	return out, json.Unmarshal(raw, &out)
+}
+
+// endSessions ends every Casdoor session of a user, in any application (its single sign-on would otherwise let the
+// browser in again without credentials): each session row and its sign-in sessions are deleted.
+func (c *casdoor) endSessions(ctx context.Context, username string) error {
+	owner, name, _ := cut(username)
+	var ans casdoorAnswer
+	if err := c.http.Do(ctx, calls.Request{Method: "GET", Path: "/api/get-sessions?owner=" + url.QueryEscape(owner),
+		Credential: c.basic()}, &ans); err != nil {
+		return err
+	}
+	if err := ans.err("the sessions of " + owner); err != nil {
+		return err
+	}
+	var sessions []struct{ Owner, Name, Application string }
+	if err := json.Unmarshal(ans.Data, &sessions); err != nil {
+		return errs.From(fmt.Errorf("casdoor: the sessions of %s: %w", owner, err))
+	}
+	for _, s := range sessions {
+		if s.Name != name {
+			continue
+		}
+		var del casdoorAnswer
+		if err := c.http.Do(ctx, calls.Request{Method: "POST", Path: "/api/delete-session", Idempotent: true,
+			Body: map[string]string{"owner": s.Owner, "name": s.Name, "application": s.Application}, Credential: c.basic()}, &del); err != nil {
+			return err
+		}
+		if err := del.err("ending a session of " + username); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteFactors removes every second factor of a user (Casdoor's delete-mfa: a form, not JSON).
+func (c *casdoor) deleteFactors(ctx context.Context, username string) error {
+	owner, name, _ := cut(username)
+	var ans casdoorAnswer
+	if err := c.http.Do(ctx, calls.Request{Method: "POST", Path: "/api/delete-mfa", Idempotent: true,
+		Form: url.Values{"owner": {owner}, "name": {name}}, Credential: c.basic()}, &ans); err != nil {
+		return err
+	}
+	return ans.err("removing the second factors of " + username)
 }
 
 // setForbidden writes a user's isForbidden in Casdoor: the whole user read back and sent again (update-user replaces

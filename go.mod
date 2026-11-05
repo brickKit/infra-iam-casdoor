@@ -4,17 +4,18 @@ go 1.27.0
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.8.2
-	github.com/brickKit/be-sdk-go/v3 v3.0.0-alpha.75
+	github.com/brickKit/be-sdk-go/v3 v3.0.0-alpha.76
+	github.com/brickKit/contract-infra-authz/v3 v3.0.0-alpha.4
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/stretchr/testify v1.12.1
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
 	github.com/MicahParks/jwkset v0.11.3 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/brickKit/be-protocol/v3 v3.0.0-alpha.70 // indirect
-	github.com/brickKit/contract-infra-authz/v3 v3.0.0-alpha.2 // indirect
 	github.com/brickKit/infra-audit/contract/v3 v3.0.0-alpha.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
@@ -82,5 +83,4 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
 	google.golang.org/grpc v1.83.2 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 )

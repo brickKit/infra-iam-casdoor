@@ -24,6 +24,7 @@ var ownKeys = map[string]string{
 	"IAM_SESSION_ABSOLUTE": "a duration (e.g. 2s, 500ms); default 12h (protocol 20)",
 	"IAM_SESSION_IDLE":     "a duration (e.g. 2s, 500ms); default 30m (protocol 20)",
 	"IAM_SIGNING_KEY":      "the current signing key: PEM, Ed25519 (PKCS #8); usually IAM_SIGNING_KEY_FILE, re-read on rotation",
+	"IAM_T_TIGHT":          "a duration (e.g. 2s, 500ms); default 1h: T_tight (security 03), beyond which a disablement or freeze decided on a stale view needs a second person",
 	"IAM_SIGNING_KEY_NEXT": "the standby key, published in the JWKS before it signs; after a switch, the old key, until its tokens expire",
 	"IAM_TOKEN_ISSUER":     "the iss of the tokens this member signs; every component's IAM_ISSUER equals it",
 }

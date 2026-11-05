@@ -21,7 +21,14 @@
 
 比较读不到 Casdoor 时，授权成员的这次补取不写回声（水位不推进）。比较只看本组件配置的签发者绑定的账号。比较用登录应用的凭据（`CASDOOR_CLIENT_ID`、`CASDOOR_CLIENT_SECRET`）读写用户：这个应用要能管理它所在组织的用户（Casdoor 4.1.0 默认如此）。
 
-下面几项随后续加入：强制登出、重置第二因素与经本组件的停用、冻结、重新启用（授权管理的操作）；移动端的刷新令牌。
+账号操作（3.0.22 起，受授权保护的用户面路由，资源 `infra.iam.account`，主体维度 `account`）：管理员停用、冻结、启用账号，强制登出，重置第二因素。
+- 停用、冻结与启用之前先问授权成员（`AccountService.CheckAccountChange`，`infra/authz` 3.0.25 起，“证明不了”的回答 3.0.26 起）：对象持有授权管理员资格时一律要另一名授权管理员的确认，答 202 `CONFIRMATION_REQUIRED`；拿到确认（授权成员的 `POST /api/authz/confirmations`，带 `account` 与 `target_state`）后带 `confirmation` 再请求，确认随这次的账号状态发出。请求者的视图依据过旧（超过 `IAM_T_TIGHT`，起始 1 小时）时，停用与冻结普通账号也要第二人。管理员账号的状态变更写错误级日志（严重告警）。
+- 顺序保证 Casdoor 不比本组件更开放：停用与冻结先在本组件生效（版本加一、会话结束、状态发出、记下请求者与确认的证据），再在 Casdoor 里禁用；启用先在 Casdoor 里允许，再在本组件生效。写 Casdoor 失败时请求答错误，本组件已做的部分保留，同一请求再来一次让 Casdoor 跟上，期间的比较也会把它禁用回去。
+- 询问之后账号又变了（版本不同）答 `CHANGE_REVISION_STALE`，重新请求。
+- 强制登出：本组件的会话全部结束、版本加一，再结束这个用户在 Casdoor 里的全部会话（任何应用）。重置第二因素：先在 Casdoor 里删除，再加版本、结束会话，比较不再计一次。
+- 全量比较遇到本组件一分钟内改过状态的账号，这一轮不比较它的状态（密码与第二因素照常比较）。
+
+移动端的刷新令牌随后续加入。
 
 ## 部署前准备
 
@@ -36,14 +43,14 @@
 - **只在开发与测试环境**：
   - 在 Casdoor 里另建一个只开密码授权的客户端，配置 `IAM_DEV_EXCHANGE=true`、`IAM_DEV_CLIENT_ID`、`IAM_DEV_CLIENT_SECRET`；
   - 仓库里的 `scripts/dev_setup.py` 按幂等的方式建好登录应用、开发客户端与测试用户（种子数据的测试账号；只建账号：`make seed`）。
-- **服务身份与授权**：系统面（端口 9200）只接受部署 mTLS，`SessionService` 只许边缘的服务身份 `infra/edge` 调用；本组件的证书、`AUTHZ_GRPC_URL` 与 `AUDIT_GRPC_URL` 与其他组件一样配置（它向授权成员提交自己的定义）。
+- **服务身份与授权**：系统面（端口 9200）只接受部署 mTLS，`SessionService` 只许边缘的服务身份 `infra/edge` 调用；本组件的证书、`AUTHZ_GRPC_URL` 与 `AUDIT_GRPC_URL` 与其他组件一样配置（它向授权成员提交自己的定义，账号状态变更之前经同一地址调用 `AccountService.CheckAccountChange`，要 `infra/authz` 3.0.25 起，且授权成员的 `IAM_COMPONENT` 是本组件）。账号操作的权限键（`infra.iam.account.*`）要登记在授权成员的注册表里。
 - **消息系统**：`BUS_URL` 与 `IMPLEMENTATION_INSTANCE` 照其他发出事件的组件配置。
 - **上线检查**：确认 `IAM_DEV_EXCHANGE` 没有打开，且身份产品里没有开着密码授权的客户端（A101）。
 
 ## 依赖说明
 
 - 必需：Casdoor（基础资源，不是组件）、数据库与消息系统。
-- 不调用其他组件；授权成员只用来提交自己的定义。
+- 授权成员：提交自己的定义；账号的停用、冻结与启用之前调用 `AccountService.CheckAccountChange`（不可达时这三个操作答错误，其余照常）。
 - 只有 `/healthz` 不依赖 Casdoor：Casdoor 暂时不可用时，已经登录的会话照常换取令牌，新的登录、改密码与开发换取失败。
 
 ## 配置指南
@@ -62,6 +69,7 @@
 | `IAM_SESSION_IDLE` | 会话空闲超时，默认 30 分钟 |
 | `IAM_SESSION_ABSOLUTE` | 会话绝对超时，默认 12 小时 |
 | `IAM_PULL_INTERVAL` | 与 Casdoor 全量比较的间隔（安全 03 的 `P_pull`），默认 1 分钟；授权成员每次补取之前另比较一次 |
+| `IAM_T_TIGHT` | 安全 03 的 `T_tight`，默认 1 小时：视图依据过旧超过它时，停用与冻结要第二人 |
 | `CASDOOR_URL` | Casdoor 的后端通道：换取令牌、取公钥 |
 | `CASDOOR_PUBLIC_URL` | 浏览器访问 Casdoor 的地址 |
 | `CASDOOR_ISSUER` | Casdoor ID 令牌的 `iss`，即它的 `origin` 设置，默认等于 `CASDOOR_PUBLIC_URL` |
@@ -81,7 +89,7 @@
 
 ## 契约索引
 
-用户面全部是公开路由：它们本身就是取得凭据的入口，其余的由会话 Cookie 保护：
+登录相关的用户面是公开路由：它们本身就是取得凭据的入口，其余的由会话 Cookie 保护：
 
 | 路由 | 用途 |
 | --- | --- |
@@ -91,6 +99,19 @@
 | `POST /api/iam/password` | 改密码：会话 Cookie 加请求体 `{"old_password","new_password"}`；旧密码不对答 400 `REQUEST_INVALID`，会话已结束答 401 `SESSION_ENDED` |
 | `GET /api/iam/jwks` | 公钥集合 |
 | `POST /api/iam/dev/token`（只在开发与测试环境） | 请求体 `{"username","password"}` |
+
+账号操作是受保护的路由（令牌加授权，3.0.22 起）；看不见这个账号答 404，别的 Casdoor 的账号也答 404：
+
+| 路由 | 操作 | 说明 |
+| --- | --- | --- |
+| `GET /api/iam/accounts/{principal}` | `infra.iam.account.read` | 账号的 `principal`、`username`、`status`、`security_mark`、`security_version` |
+| `POST /api/iam/accounts/{principal}/disable` | `infra.iam.account.disable`（只减少访问） | 停用；请求体可带 `security_mark`（`compromised`、`suspicious`）与 `confirmation` |
+| `POST /api/iam/accounts/{principal}/freeze` | `infra.iam.account.freeze`（只减少访问） | 冻结（`security_frozen`）；可带 `confirmation` |
+| `POST /api/iam/accounts/{principal}/enable` | `infra.iam.account.enable` | 启用（从停用或冻结）；可带 `confirmation` |
+| `POST /api/iam/accounts/{principal}/logout` | `infra.iam.account.logout`（只减少访问） | 强制登出 |
+| `POST /api/iam/accounts/{principal}/reset-second-factor` | `infra.iam.account.reset_second_factor` | 重置第二因素 |
+
+停用、冻结、启用：已是目标状态时只让 Casdoor 跟上，答 200；要确认时答 202（`reason: CONFIRMATION_REQUIRED`、`administrator`、`target_state`、`security_version`）；确认人的资格此刻证明不了（身份来源停住，管理员账号的确认人要此刻可证明）答 202（`outcome: processing`、`reason: ADMIN_AVAILABILITY_UNPROVABLE`），什么也没改，来源恢复后再请求；授权成员驳回答 403；成功答 200 与账号。
 
 系统面（gRPC，端口 9200）：`be.session.v1.SessionService`（`be-protocol` 的 `proto/be/session/v1/session.proto`，调用组件只有 `infra/edge`）：
 - `Exchange`：会话 Cookie 值的摘要（小写十六进制 SHA-256）换访问令牌；会话已结束答 `SESSION_ENDED`；`renew_idle` 为假时不续期空闲超时；

@@ -198,9 +198,16 @@ func (s store) securityChange(ctx context.Context, principal, reason, keep strin
 // change is a security change inside the caller's transaction: the version up, the sessions but keep ended with
 // reason, the status (as the row now has it) out.
 func (s store) change(ctx context.Context, tx db.Tx, principal, reason, keep string) (int64, error) {
+	return s.changeWith(ctx, tx, principal, reason, keep, "")
+}
+
+// changeWith is change carrying a confirmation in the status record (a protected status change, A134); every other
+// security change sends none, so a confirmation goes out with the change it confirmed only.
+func (s store) changeWith(ctx context.Context, tx db.Tx, principal, reason, keep, confirmation string) (int64, error) {
 	var version int64
-	if err := tx.QueryRow(ctx, `UPDATE iam_account SET security_version = security_version + 1
-		WHERE principal = $1 RETURNING security_version`, principal).Scan(&version); err != nil {
+	if err := tx.QueryRow(ctx, `UPDATE iam_account SET security_version = security_version + 1,
+		status_confirmation = NULLIF($2, '')::uuid WHERE principal = $1 RETURNING security_version`, principal,
+		confirmation).Scan(&version); err != nil {
 		return 0, err
 	}
 	rows, err := tx.Query(ctx, `UPDATE iam_session SET ended_at = now(), end_reason = $2
@@ -231,8 +238,9 @@ func (s store) ended(ctx context.Context, tx db.Tx, idHash string) error {
 // the version is also the record's revision in this member's database.
 func (s store) status(ctx context.Context, tx db.Tx, principal string, version int64) error {
 	var status, mark string
-	if err := tx.QueryRow(ctx, "SELECT status, security_mark FROM iam_account WHERE principal = $1", principal).
-		Scan(&status, &mark); err != nil {
+	var confirmation *string
+	if err := tx.QueryRow(ctx, "SELECT status, security_mark, status_confirmation::text FROM iam_account WHERE principal = $1",
+		principal).Scan(&status, &mark, &confirmation); err != nil {
 		return err
 	}
 	rec := map[string]any{
@@ -242,6 +250,9 @@ func (s store) status(ctx context.Context, tx db.Tx, principal string, version i
 		"status":  status, "security_version": version}
 	if mark != "none" {
 		rec["security_mark"] = mark
+	}
+	if confirmation != nil {
+		rec["confirmation"] = *confirmation
 	}
 	raw, digest, err := records.Seal("be.security.account_status", rec)
 	if err != nil {

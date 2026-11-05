@@ -49,11 +49,20 @@ func (p *pullRef) before(ctx context.Context) error {
 
 type bound struct{ principal, subject, username string }
 
+// InFlight is how long before a comparison's read this member's own status change keeps the account's status out of
+// that comparison: Casdoor may not show the change yet (a write in flight, or read before it), and the next run
+// compares it. The password and the second factors are compared as always.
+const InFlight = time.Minute
+
 // reconcile compares every bound account with Casdoor; an error leaves the rest for the next run (the pull before
 // an echo then writes no echo: the watermark does not pass what was not compared).
 func (m *Module) reconcile(ctx context.Context) error {
 	var accounts []bound
+	var readAt time.Time // before anything is read from Casdoor, on the database's clock (local_change_at's)
 	if err := m.rt.DB.BackgroundTx(ctx, func(ctx context.Context, tx db.Tx) error {
+		if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&readAt); err != nil {
+			return err
+		}
 		// only this Casdoor's accounts: the same subject under another issuer is another identity (TI11)
 		rows, err := tx.Query(ctx, `SELECT principal::text, provider_subject, username FROM iam_account
 			WHERE provider = 'casdoor' AND issuer = $1 ORDER BY username`, m.casdoor.issuer)
@@ -88,7 +97,7 @@ func (m *Module) reconcile(ctx context.Context) error {
 			if !ok {
 				u = productUser{ID: a.subject, IsDeleted: true} // gone from Casdoor: it signs in no more
 			}
-			rollback, err := m.store.compare(ctx, a.principal, u, m.rt.Logger)
+			rollback, err := m.store.compare(ctx, a.principal, u, readAt, m.rt.Logger)
 			if err != nil {
 				return err
 			}
@@ -114,8 +123,9 @@ func cut(username string) (owner, name string, ok bool) {
 // pull is the periodic job.
 func (m *Module) pull(ctx context.Context, _ *work.Run) error { return m.reconcile(ctx) }
 
-// compare applies one Casdoor user to its account under the account's row lock; rollback: forbid it there again.
-func (s store) compare(ctx context.Context, principal string, u productUser, log interface {
+// compare applies one Casdoor user to its account under the account's row lock; rollback: forbid it there again. The
+// status of an account this member changed within InFlight before readAt (or since) is left to the next run.
+func (s store) compare(ctx context.Context, principal string, u productUser, readAt time.Time, log interface {
 	Warn(string, ...any)
 	Error(string, ...any)
 }) (rollback bool, err error) {
@@ -124,18 +134,21 @@ func (s store) compare(ctx context.Context, principal string, u productUser, log
 		var status string
 		var forbidden *bool
 		var passwordAt, mfa *string
-		if err := tx.QueryRow(ctx, `SELECT status, product_forbidden, product_password_at, product_mfa FROM iam_account
-			WHERE principal = $1 FOR UPDATE`, principal).Scan(&status, &forbidden, &passwordAt, &mfa); err != nil {
+		var recent bool
+		if err := tx.QueryRow(ctx, `SELECT status, product_forbidden, product_password_at, product_mfa,
+				coalesce(local_change_at > $2::timestamptz - make_interval(secs => $3), false)
+			FROM iam_account WHERE principal = $1 FOR UPDATE`, principal, readAt, InFlight.Seconds()).
+			Scan(&status, &forbidden, &passwordAt, &mfa, &recent); err != nil {
 			return err
 		}
 		first := forbidden == nil
 		reason, next := "", status
 		switch {
-		case status == "active" && u.off():
+		case !recent && status == "active" && u.off():
 			reason, next = "disabled", "disabled"
 			log.Warn("an account was disabled in Casdoor itself: it takes effect here", "event", "account_disabled_in_product",
 				"principal", principal, "product_updated", u.UpdatedTime)
-		case status != "active" && !u.off():
+		case !recent && status != "active" && !u.off():
 			rollback = true
 			log.Error("an account disabled here is allowed in Casdoor (a product rollback or a console re-enable): it is "+
 				"forbidden there again; only this member re-enables", "event", "account_enabled_in_product",

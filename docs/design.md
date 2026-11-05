@@ -48,6 +48,7 @@
 - 同一会话的换取在会话行锁内依次办理；轮询请求触发的换取不续期空闲超时。
 - 账号按 Casdoor 的签发者加 subject 绑定；同邮箱、同登录名、别的签发者的同一 subject 都不接管（安全 02 TI11）。加签发者之前绑定的行，启动时归配置的签发者。
 - 改密码经本组件办理：Casdoor 用登录应用的凭据核对旧密码（错的计入 Casdoor 的锁定次数），然后在一个事务里加版本、结束其他会话、发出账号状态；Casdoor 改成之后这个事务失败的，由第 3 项的拉取按 `LastChangePasswordTime` 补上。
+- 账号操作（3.0.22，A134）：停用、冻结、启用之前问授权成员要不要确认（管理员的账号受保护；视图依据过旧超过 `T_tight` 时本组件请求第二人），确认随这次的状态记录发出、只发一次；确认人此刻证明不了时答处理中（`ADMIN_AVAILABILITY_UNPROVABLE`，契约 alpha.4 的 `UNPROVABLE`）；询问之后版本变了答 `CHANGE_REVISION_STALE`。写 Casdoor 的顺序让它不比本组件更开放：停用与冻结先本地、后 Casdoor，启用先立栅栏、Casdoor 允许、再本地。比较遇到一分钟内（`InFlight`）本组件改过状态的账号，不比较它的状态。
 - （设计，本版未做）移动端的刷新令牌在会话锁内只做一次，旧刷新令牌再次使用时撤销整串。
 
 **作为授权的外部来源**（设计，安全 03）：Casdoor 给不出可靠的变更序号（操作记录连失败的请求也写，webhook 不带序号、约每 30 秒批量发出），所以正确性靠定期的全量状态比较，webhook 只用来更快地发现。收到补取请求时先向产品拉取截至此刻的账号变更，写入发件表后再写回声，拉取失败时不写回声；另按 `P_pull`（起始 1 分钟）定期拉取。停用由本组件记证据（协议 15），以自己记录的停用为准：只有产品坐标中晚于本地记录的启用才认作重新启用，否则判为产品回退，重新停用并告警。本组件是水位来源（协议 02）；高可用部署中全部写入同步提交（D66，协议 15）。整套恢复后结束恢复前创建的全部会话，撤销刷新令牌，按证据强制凭据收紧过的主体重设密码与 MFA。
@@ -57,21 +58,24 @@
 设计上的命令：登录回调、登出、改密码；边缘的换取与已结束会话（系统方法，D61 与 A118）；服务令牌签发（部署选用这条路线时）；公钥集合；补取（水位探测：只对声明订阅的服务身份开放，返回到回声为止的变更，协议 02 的来源水位）。
 
 本版：
-- 用户面全部是公开路由（登录之前没有令牌），由会话 Cookie 保护：`GET /api/iam/login`、`GET /api/iam/callback`、`POST /api/iam/logout`、`POST /api/iam/password`、`GET /api/iam/jwks`；开发环境另有 `POST /api/iam/dev/token`。
+- 用户面的登录相关路由是公开的（登录之前没有令牌），由会话 Cookie 保护：`GET /api/iam/login`、`GET /api/iam/callback`、`POST /api/iam/logout`、`POST /api/iam/password`、`GET /api/iam/jwks`；开发环境另有 `POST /api/iam/dev/token`。
+- 账号操作（3.0.22）是受保护的路由，资源 `infra.iam.account`、主体维度 `account`：`GET /api/iam/accounts/{principal}`，`POST …/disable`、`…/freeze`、`…/logout`（只减少访问）、`…/enable`、`…/reset-second-factor`（`accountops.go`）。
 - 系统面（端口 9200）：`be.session.v1.SessionService` 的 `Exchange` 与 `Ended`，只许 `infra/edge`；账号状态流的补取（`be.source.v1.WatermarkService`）与批量读取、快照（`be.source.v1.RecordService`），只许 `infra/authz`，都是 SDK 自带的标准方法（A115、A121），本组件只给出两个读取函数（`iam/accounts.go`）。
 
 ## 事件
 
 - `be.session.ended.v1`（流 `be.session.ended`，一个分区，记录身份是会话摘要）：会话的每一次结束；边缘经 `Ended` 按位置读，不订阅。
-- `infra.iam.account_status_changed.v1`（流 `infra.iam.account_status`，四个分区，水位来源；记录身份是主体，版本是安全状态版本）：载荷是安全记录 `be.security.account_status`；账号绑定时与改密码时发出（`status` 为 `active`），停用与冻结随第 3 项的 T9。
+- `infra.iam.account_status_changed.v1`（流 `infra.iam.account_status`，四个分区，水位来源；记录身份是主体，版本是安全状态版本）：载荷是安全记录 `be.security.account_status`；账号绑定时、每次安全变更（改密码、强制登出、重置第二因素、比较发现的变更）与状态变更时发出；受保护的状态变更带 `confirmation`。
 
 ## 依赖
 
-Casdoor（基础资源）、数据库与消息系统（必需）；不调用其他组件，授权成员只用来提交定义。可选：外部身份源（按客户）；`mdm/employee`（只经事件，开通账号，以后）；`infra/audit`（兼任证据存储，停用的意图，以后）。
+Casdoor（基础资源）、数据库与消息系统（必需）；授权成员：提交定义，账号状态变更之前调用 `AccountService.CheckAccountChange`（`contract-infra-authz` alpha.4）。可选：外部身份源（按客户）；`mdm/employee`（只经事件，开通账号，以后）；`infra/audit`（兼任证据存储，停用的意图，以后）。
 
 ## 实现状态
 
-3.0.21（底层先行第 3 项 T9b）：与 Casdoor 的全量比较（`reconcile.go`，`IAM_PULL_INTERVAL` 起始 1 分钟，另在授权成员每次补取的回声之前，SDK 的 `Watermark.Before`，P9.16）：控制台停用照常生效并记本地证据（表 `iam_status_evidence`，产品坐标是 Casdoor 的 `updatedTime`；协议 15 的证据存储随第 4 项）；本组件停用的账号在 Casdoor 被启用时判为回退，在 Casdoor 里重新禁用并告警，本组件也拒绝它登录；Casdoor 里改密码（`lastChangePasswordTime`）或改第二因素（几个字段的摘要）是安全变更；本组件自己改的密码把新时刻记成基线，下一次比较不再计（读不到时宁可多计一次）。账号有状态与安全标记两列，状态记录按它们写。比较只看配置的签发者绑定的账号。读写 Casdoor 用登录应用的凭据（Basic，SDK 的 `calls.Request.Credential`）。停用控制台里的管理员时的严重告警要知道对象是不是授权管理员，随 T9c。
+3.0.22（底层先行第 3 项 T9c）：账号操作（`accountops.go`，迁移 0005）：停用、冻结、启用、强制登出、重置第二因素，受授权保护，资源 `infra.iam.account`。状态变更先问授权成员（A134），对象是管理员时写错误级日志；确认存进 `status_confirmation`，随这次的状态记录发出，之后的安全变更清掉它；证据记下请求者与确认（`requested_by`、`confirmation`，来源 `adapter`）。顺序：停用与冻结先本地后 Casdoor，启用先栅栏（`local_change_at`）、Casdoor、再本地；比较对一分钟内本组件改过状态的账号只跳过状态一项。强制登出结束本组件与 Casdoor 的全部会话（`get-sessions` 后逐个 `delete-session`）；重置第二因素经 Casdoor 的 `delete-mfa`，把新状态记成比较的基线。`IAM_T_TIGHT` 起始 1 小时。
+
+3.0.21（底层先行第 3 项 T9b）：与 Casdoor 的全量比较（`reconcile.go`，`IAM_PULL_INTERVAL` 起始 1 分钟，另在授权成员每次补取的回声之前，SDK 的 `Watermark.Before`，P9.16）：控制台停用照常生效并记本地证据（表 `iam_status_evidence`，产品坐标是 Casdoor 的 `updatedTime`；协议 15 的证据存储随第 4 项）；本组件停用的账号在 Casdoor 被启用时判为回退，在 Casdoor 里重新禁用并告警，本组件也拒绝它登录；Casdoor 里改密码（`lastChangePasswordTime`）或改第二因素（几个字段的摘要）是安全变更；本组件自己改的密码把新时刻记成基线，下一次比较不再计（读不到时宁可多计一次）。账号有状态与安全标记两列，状态记录按它们写。比较只看配置的签发者绑定的账号。读写 Casdoor 用登录应用的凭据（Basic，SDK 的 `calls.Request.Credential`）。控制台里停用管理员时的严重告警：比较这一侧还不知道对象是不是授权管理员（只有经本组件办理的状态变更从 `CheckAccountChange` 得知），见未决问题。
 
 3.0.17（底层先行第 3 项 T3）：账号状态成为授权成员的水位来源：账号绑定时也发出状态，启动时给还没发过的账号补发，保存发出的记录，补取与批量读取、快照只许 `infra/authz`。
 
@@ -89,8 +93,14 @@ Casdoor（基础资源）、数据库与消息系统（必需）；不调用其�
 | 会话结束后边缘下一次拉取即丢弃它的令牌，身份成员不可达时不晚于令牌有效期 | 结束写进流 `be.session.ended`，`Ended` 按位置读（端到端测试）；停用随第 3 项 |
 | 改密码后其他会话结束，当前会话透明续上 | 端到端测试：其他会话换取答 `SESSION_ENDED`，当前会话拿到新版本的令牌 |
 | 在 Casdoor 控制台直接停用账号，补取或定期拉取时被拉取并记证据 | 端到端测试（3.0.21）：停用生效、会话结束、证据；重新启用被回退并重新禁用 |
+| 管理员停用、冻结、启用一个账号；对象是授权管理员时要确认 | 端到端测试（3.0.22）：先问授权成员（替身），要确认时 202、证明不了时 202 处理中、驳回 403、带确认成功且确认随状态发出一次；Casdoor 跟着禁用与允许；版本变了答 `CHANGE_REVISION_STALE`；一分钟内的自身变更不被比较当作回退 |
+| 强制登出与重置第二因素 | 端到端测试（3.0.22）：本组件与 Casdoor 的会话结束；Casdoor 的第二因素删除、只计一次 |
 | 签名密钥泄露后立即切换到备用密钥 | 备用密钥与轮换（单元测试） |
 
 ## 未决问题
+
+- 重置管理员的第二因素削弱他的账号（拿到他密码的人可以重新绑定），本版不是受保护操作；要不要像状态变更一样经授权成员确认，待定。
+- 控制台里直接停用的账号是不是授权管理员，比较时不知道：严重告警只在经本组件办理时发出；要在比较时也问授权成员，或由授权成员在应用账号状态时告警（它已对管理员持有资格的变化写错误日志）。
+- 视图依据过旧时以视图最后一次完整续发的时刻代替来源水位来算 `T_tight`（更保守）；授权成员发现来源回退（`stalled`）时本组件看不到，这时仍按时长判断。
 
 - 账号停用的拉取间隔与全量比较的成本：每次比较读一遍组织的全部用户（Casdoor 的 `get-users` 不分页），用户多到上万时要量一次。

@@ -4,7 +4,7 @@ kind: Component
 metadata:
   id: infra/iam-casdoor
   name: Identity (Casdoor)
-  version: 3.0.21
+  version: 3.0.22
   description: "The identity member in front of Casdoor: browser login with PKCE and a server-side session, short access tokens it signs for the platform principal, its public keys; a development-only password exchange (A101)"
   repository: https://github.com/brickKit/infra-iam-casdoor
 
@@ -92,6 +92,9 @@ configSchema:
       type: boolean
     IAM_PULL_INTERVAL:
       description: 'a duration (e.g. 2s, 500ms); default 1m: P_pull, how often every bound account is compared with Casdoor (security 03), besides before every echo; a duration (e.g. 2s, 500ms); SDK default 60s'
+      type: string
+    IAM_T_TIGHT:
+      description: 'a duration (e.g. 2s, 500ms); default 1h: T_tight (security 03), beyond which a disablement or freeze decided on a stale view needs a second person; a duration (e.g. 2s, 500ms); SDK default 3600s'
       type: string
     IAM_ISSUER:
       description: 'process-level: the same for every member of a shell'

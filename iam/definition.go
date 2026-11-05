@@ -20,7 +20,7 @@ import (
 // Identity of the component.
 const (
 	ID      = "infra/iam-casdoor"
-	Version = "3.0.21"
+	Version = "3.0.22"
 )
 
 // GRPCPort is the system surface's port (registry/ports.tsv).
@@ -49,14 +49,41 @@ const (
 	Authz         = "infra/authz"
 )
 
-// Definitions are the resources and operations: only the system methods have operations; the routes are public (a
-// credential is obtained through them in the first place) and protect themselves with the session cookie.
+// The account operations of the user surface (security 03's tightening-only operations, security 08's admin
+// accounts, A134): an account is one record, its principal the dimension AccountDim. Disabling, freezing and the
+// forced logout only reduce access; enabling and the reset of the second factors do not.
+const (
+	Account        = "infra.iam.account"
+	AccountDim     = "account"
+	OpAccountView  = "infra.iam.account.read"
+	OpDisable      = "infra.iam.account.disable"
+	OpFreeze       = "infra.iam.account.freeze"
+	OpEnable       = "infra.iam.account.enable"
+	OpForceLogout  = "infra.iam.account.logout"
+	OpResetFactors = "infra.iam.account.reset_second_factor"
+)
+
+// Definitions are the resources and operations: the system methods, and the account operations an administrator
+// does on the user surface; the login routes are public (a credential is obtained through them in the first place)
+// and protect themselves with the session cookie.
 func Definitions() *sdkauthz.Definitions {
+	ordinary := sdkauthz.Field{Class: sdkauthz.Ordinary}
+	manage := func(key string, tightening bool) sdkauthz.Operation {
+		return sdkauthz.Operation{Key: key, ResourceType: Account, Purpose: "manage", RiskClass: "high",
+			SideEffects: []string{"security_change"}, Audit: true, TighteningOnly: tightening}
+	}
 	return &sdkauthz.Definitions{Component: ID,
 		Resources: []sdkauthz.Resource{
 			{Type: Sessions, ViewOperation: OpEnded, Dimensions: map[string]sdkauthz.Dimension{}, Fields: map[string]sdkauthz.Field{}},
-			{Type: Accounts, ViewOperation: OpAccountRead, Dimensions: map[string]sdkauthz.Dimension{}, Fields: map[string]sdkauthz.Field{}}},
+			{Type: Accounts, ViewOperation: OpAccountRead, Dimensions: map[string]sdkauthz.Dimension{}, Fields: map[string]sdkauthz.Field{}},
+			{Type: Account, ViewOperation: OpAccountView,
+				Dimensions: map[string]sdkauthz.Dimension{AccountDim: {Kind: sdkauthz.Principal, Column: "principal", PrincipalRole: "account"}},
+				Fields: map[string]sdkauthz.Field{"principal": ordinary, "username": ordinary, "status": ordinary,
+					"security_mark": ordinary, "security_version": ordinary}}},
 		Operations: []sdkauthz.Operation{
+			{Key: OpAccountView, ResourceType: Account, Purpose: "read", RiskClass: "low"},
+			manage(OpDisable, true), manage(OpFreeze, true), manage(OpForceLogout, true),
+			manage(OpEnable, false), manage(OpResetFactors, false),
 			{Key: OpExchange, ResourceType: Sessions, Purpose: "action", RiskClass: "low"},
 			{Key: OpEnded, ResourceType: Sessions, Purpose: "read", RiskClass: "low"},
 			{Key: OpAccountPull, ResourceType: Accounts, Purpose: "read", RiskClass: "low"},
@@ -70,6 +97,7 @@ const (
 	DefaultIdle     = 30 * time.Minute
 	DefaultAbsolute = 12 * time.Hour
 	LoginTTL        = 10 * time.Minute
+	DefaultTight    = time.Hour // security 03's T_tight
 )
 
 //go:embed migrations/*.sql
@@ -100,9 +128,11 @@ func Keys() []config.Key {
 		{Name: "CASDOOR_ISSUER", Type: config.String}, // default CASDOOR_PUBLIC_URL
 		{Name: "CASDOOR_CLIENT_ID", Type: config.String, Required: true},
 		{Name: "CASDOOR_CLIENT_SECRET", Type: config.String, Required: true, Secret: true},
-		// A101: development and test deployments only; the go-live check confirms it is off
 		// P_pull (security 03): how often every bound account is compared with Casdoor, besides before every echo
 		{Name: "IAM_PULL_INTERVAL", Type: config.Duration, Default: DefaultPullInterval},
+		// T_tight (security 03): beyond it, a disablement or freeze decided on a stale view needs a second person
+		{Name: "IAM_T_TIGHT", Type: config.Duration, Default: DefaultTight},
+		// A101: development and test deployments only; the go-live check confirms it is off
 		{Name: "IAM_DEV_EXCHANGE", Type: config.Boolean, Default: false},
 		{Name: "IAM_DEV_CLIENT_ID", Type: config.String},
 		{Name: "IAM_DEV_CLIENT_SECRET", Type: config.String, Secret: true},
