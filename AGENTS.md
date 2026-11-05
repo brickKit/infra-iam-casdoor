@@ -13,7 +13,7 @@
 | `iam/casdoor.go` | 对 Casdoor 的 OIDC 客户端：授权地址与 PKCE、授权码与密码换取、ID 令牌核验 |
 | `iam/tokens.go` | 签发访问令牌 |
 | `iam/keys.go` | 签名密钥、kid（RFC 7638 指纹）、JWKS |
-| `iam/store.go` | 登录中的请求、按签发者与 subject 的账号绑定、会话；会话结束与安全变更在同一事务里写发件表 |
+| `iam/store.go` | 登录中的请求、按签发者与 subject 的账号绑定、会话（记下创建时的恢复代次，恢复之后的清扫 `endBeforeRecovery`）；会话结束与安全变更在同一事务里写发件表 |
 | `iam/product.go` | 对 Casdoor 的管理一侧：读组织的用户、禁用与允许一个用户、结束一个用户的会话、删除第二因素（登录应用的凭据，Basic） |
 | `iam/reconcile.go` | 与 Casdoor 的全量比较（安全 03）：定期作业与补取的“回声之前”，每个账号在行锁内比较、记证据 |
 | `iam/accountops.go` | 账号操作（受保护的路由）：停用、冻结、启用（先问授权成员 `CheckAccountChange`、确认随状态发出、写 Casdoor 的顺序）、强制登出、重置第二因素 |
@@ -28,7 +28,7 @@
 ## 构建与测试
 
 - `go test ./...`：单元测试。包括令牌能通过 SDK 自己的核验、密钥轮换、返回地址只留站内、PKCE 与合并安全。
-- `go test -tags integration ./iam/`：对真实的 Casdoor、PostgreSQL 与消息系统端到端测一遍，覆盖开发换取、按签发者绑定、浏览器登录、边缘经 mTLS 的换取与已结束会话、改密码（一次性用户，测完删掉）、空闲超时与登出、与 Casdoor 的比较、账号操作（授权成员是 sectest 的替身，`AccountCheck` 设它的回答）。要先运行 `scripts/dev_setup.py`，所需的环境变量写在测试文件开头；缺一个就失败，不会跳过；系统面的端口 9200 要空着。
+- `go test -tags integration ./iam/`：对真实的 Casdoor、PostgreSQL 与消息系统端到端测一遍，覆盖开发换取、按签发者绑定、浏览器登录、边缘经 mTLS 的换取与已结束会话、改密码（一次性用户，测完删掉）、空闲超时与登出、与 Casdoor 的比较、账号操作（授权成员是 sectest 的替身，`AccountCheck` 设它的回答）、证据的重放、整套恢复的 6.6（最后一步：推进恢复代次、以恢复阶段重启成员，结束全部会话）。要先运行 `scripts/dev_setup.py`，所需的环境变量写在测试文件开头；缺一个就失败，不会跳过；系统面的端口 9200 要空着。
 - `brickkit lint`
 
 ## 设计取舍

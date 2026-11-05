@@ -106,8 +106,42 @@ func (m *Module) Jobs(j *work.Jobs) error {
 	return nil
 }
 
-// Start gives the accounts bound before the issuer was kept the configured Casdoor's issuer (store.adopt).
-func (m *Module) Start(ctx context.Context) error { return m.store.adopt(ctx, m.casdoor.issuer) }
+// Start gives the accounts bound before the issuer was kept the configured Casdoor's issuer (store.adopt), and ends
+// the sessions from before a full recovery (protocol 15, 6.6). The SDK does not start a module while frozen (the
+// database may be under restore then, be-protocol P1.23).
+func (m *Module) Start(ctx context.Context) error {
+	if err := m.store.adopt(ctx, m.casdoor.issuer); err != nil {
+		return err
+	}
+	return m.endSessionsBeforeRecovery(ctx)
+}
+
+// productCallLimit bounds one call to Casdoor made outside a request (the start's: no request deadline to inherit).
+const productCallLimit = 10 * time.Second
+
+// endSessionsBeforeRecovery ends this platform's sessions from before a full recovery, then this platform's client
+// sessions in Casdoor of the same people (protocol 15, 6.6 when the identity product is outside the recovery group:
+// the people's sessions in other applications stay). A product call that fails is logged for the operator; the
+// platform's sessions are ended either way.
+func (m *Module) endSessionsBeforeRecovery(ctx context.Context) error {
+	people, err := m.store.endBeforeRecovery(ctx)
+	if err != nil || len(people) == 0 {
+		return err
+	}
+	failed := 0
+	for _, u := range people {
+		cctx, cancel := context.WithTimeout(ctx, productCallLimit)
+		err := m.casdoor.endSessions(cctx, u)
+		cancel()
+		if err != nil {
+			failed++
+			m.rt.Logger.Warn("a full recovery could not end a person's sessions in Casdoor", "username", u, "error", err.Error())
+		}
+	}
+	m.rt.Logger.Warn("a full recovery ended the sessions from before it", "event", "sessions_ended_by_recovery",
+		"people", len(people), "product_failures", failed)
+	return nil
+}
 
 // Routes registers the login, the logout, the password change, the public keys and, in development deployments, the
 // password exchange: public, they are how a credential is obtained in the first place, and the session cookie

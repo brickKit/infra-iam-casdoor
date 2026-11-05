@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,6 +51,8 @@ type iamRun struct {
 	throwaway    string            // the throwaway account's principal (passwordChange)
 	payload      []byte            // its last status event
 	secrets      []string          // never in the logs
+	env          map[string]string // the member's environment (restart changes it)
+	stop         func()            // stops the running member
 }
 
 // startIAM migrates and starts the member on a fresh schema, with an account bound before the issuer was kept and
@@ -76,33 +79,10 @@ func startIAM(t *testing.T) *iamRun {
 		"CASDOOR_CLIENT_SECRET": need(t, "IAM_IT_CLIENT_SECRET"), "IAM_DEV_EXCHANGE": "true",
 		"IAM_DEV_CLIENT_ID": itDevClient, "IAM_DEV_CLIENT_SECRET": need(t, "IAM_IT_DEV_CLIENT_SECRET")}
 	maps.Copy(env, r.w.Env(t, ID)) // DEPLOYMENT_ID, the authorization member, the service identity
-	run := func(args ...string) (int, *bytes.Buffer) {
-		var out bytes.Buffer
-		ctx, cancel := context.WithCancel(r.ctx)
-		done := make(chan int, 1)
-		go func() {
-			done <- launcher.Run(ctx, Definition(), launcher.Options{Args: args, Stdout: &out, Stderr: &out,
-				Env: config.Env{LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }, Read: os.ReadFile}})
-		}()
-		if len(args) > 0 { // migrate runs to its end
-			code := <-done
-			cancel()
-			return code, &out
-		}
-		t.Cleanup(func() { cancel(); <-done })
-		ready := assert.Eventually(t, func() bool {
-			resp, err := http.Get(itBase + "/readyz")
-			if err == nil {
-				resp.Body.Close()
-			}
-			return err == nil && resp.StatusCode == 200
-		}, 15*time.Second, 50*time.Millisecond)
-		if !ready {
-			t.Fatal(out.String())
-		}
-		return 0, &out
-	}
-	code, out := run("migrate")
+	r.env, r.logs = env, &bytes.Buffer{}
+	var out bytes.Buffer
+	code := launcher.Run(r.ctx, Definition(), launcher.Options{Args: []string{"migrate"}, Stdout: &out, Stderr: &out,
+		Env: config.Env{LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }, Read: os.ReadFile}})
 	require.Equal(t, launcher.ExitOK, code, out.String())
 
 	bobSub, _ := casdoorSubject(t, "test.bob", r.password)
@@ -113,7 +93,7 @@ func startIAM(t *testing.T) *iamRun {
 		r.bobBefore, bobSub, r.otherIssuers, aliceSub)
 	require.NoError(t, err)
 
-	_, r.logs = run()
+	r.serve()
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Log(r.logs.String())
@@ -170,6 +150,39 @@ func (r *iamRun) tokens() {
 	resp, _ = send(t, "POST", itBase+"/api/iam/session/token", nil, r.session)
 	assert.Equal(t, 501, resp.StatusCode, "no such route")
 	r.secrets = append(r.secrets, r.session.Value)
+}
+
+// serve starts the member on r.env until the test ends or restart stops it; its logs go to r.logs.
+func (r *iamRun) serve() {
+	t, env := r.t, r.env
+	ctx, cancel := context.WithCancel(r.ctx)
+	done := make(chan int, 1)
+	go func() {
+		done <- launcher.Run(ctx, Definition(), launcher.Options{Stdout: r.logs, Stderr: r.logs,
+			Env: config.Env{LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }, Read: os.ReadFile}})
+	}()
+	var once sync.Once
+	r.stop = func() { once.Do(func() { cancel(); <-done }) }
+	t.Cleanup(r.stop)
+	ready := assert.Eventually(t, func() bool {
+		resp, err := http.Get(itBase + "/readyz")
+		if err == nil {
+			resp.Body.Close()
+		}
+		return err == nil && resp.StatusCode == 200
+	}, 15*time.Second, 50*time.Millisecond)
+	if !ready {
+		t.Fatal(r.logs.String())
+	}
+}
+
+// restart stops the member and starts it again with extra in its environment (a phase of a full recovery).
+func (r *iamRun) restart(extra map[string]string) {
+	r.stop()
+	env := maps.Clone(r.env)
+	maps.Copy(env, extra)
+	r.env = env
+	r.serve()
 }
 
 func (r *iamRun) sessions(component string) sessionpb.SessionServiceClient {

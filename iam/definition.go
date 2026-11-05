@@ -20,7 +20,7 @@ import (
 // Identity of the component.
 const (
 	ID      = "infra/iam-casdoor"
-	Version = "3.0.25"
+	Version = "3.0.26"
 )
 
 // GRPCPort is the system surface's port (registry/ports.tsv).

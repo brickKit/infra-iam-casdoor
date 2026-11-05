@@ -119,15 +119,17 @@ func (s store) principal(ctx context.Context, issuer string, id providerUser) (a
 // open starts a session for a principal.
 func (s store) open(ctx context.Context, idHash, principal string) error {
 	return s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-		_, err := tx.Exec(ctx, "INSERT INTO iam_session (id_hash, principal) VALUES ($1, $2)", idHash, principal)
+		_, err := tx.Exec(ctx, `INSERT INTO iam_session (id_hash, principal, recovery_generation)
+			VALUES ($1, $2, (SELECT generation FROM be_recovery_generation))`, idHash, principal)
 		return err
 	})
 }
 
 // use returns a live session's account and the instant the session ends at the latest (the absolute timeout, or the
 // idle one from now), renewing the idle time unless renew is false (a polling request's exchange, protocol 20). The
-// session row's lock serialises the session's uses. A session past either timeout is ended with that reason (and
-// written to the ended stream); ok=false for every session that is not live.
+// session row's lock serialises the session's uses. A session past either timeout, or created before the deployment's
+// last full recovery (protocol 15, 6.6), is ended with that reason (and written to the ended stream); ok=false for
+// every session that is not live.
 func (s store) use(ctx context.Context, idHash string, idle, absolute time.Duration, renew bool) (a account,
 	until time.Time, ok bool, err error) {
 	err = s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
@@ -135,12 +137,14 @@ func (s store) use(ctx context.Context, idHash string, idle, absolute time.Durat
 		err := tx.QueryRow(ctx, `UPDATE iam_session SET last_seen = CASE WHEN $4 THEN now() ELSE last_seen END
 			WHERE id_hash = $1 AND ended_at IS NULL AND last_seen >= now() - make_interval(secs => $2)
 				AND created_at >= now() - make_interval(secs => $3)
+				AND recovery_generation >= (SELECT generation FROM be_recovery_generation)
 			RETURNING principal::text, created_at, last_seen`, idHash, idle.Seconds(), absolute.Seconds(), renew).
 			Scan(&a.principal, &created, &seen)
 		if errors.Is(err, pgx.ErrNoRows) {
 			var ended string
 			err = tx.QueryRow(ctx, `UPDATE iam_session SET ended_at = now(),
-					end_reason = CASE WHEN created_at < now() - make_interval(secs => $2) THEN 'absolute' ELSE 'idle' END
+					end_reason = CASE WHEN recovery_generation < (SELECT generation FROM be_recovery_generation) THEN 'recovery'
+						WHEN created_at < now() - make_interval(secs => $2) THEN 'absolute' ELSE 'idle' END
 				WHERE id_hash = $1 AND ended_at IS NULL RETURNING id_hash`, idHash, absolute.Seconds()).Scan(&ended)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil // unknown or already ended
@@ -181,6 +185,50 @@ func (s store) end(ctx context.Context, idHash, reason string) error {
 		}
 		return s.ended(ctx, tx, ended)
 	})
+}
+
+// endBeforeRecovery ends every live session created before the deployment's current recovery generation (protocol
+// 15, 6.6: a full recovery ends the sessions from before it), each written to the ended stream; it answers the
+// accounts whose sessions ended. Nothing to do unless a full recovery advanced the generation.
+func (s store) endBeforeRecovery(ctx context.Context) (usernames []string, err error) {
+	err = s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
+		usernames = nil
+		rows, err := tx.Query(ctx, `UPDATE iam_session SET ended_at = now(), end_reason = 'recovery'
+			WHERE ended_at IS NULL AND recovery_generation < (SELECT generation FROM be_recovery_generation)
+			RETURNING id_hash, principal::text`)
+		if err != nil {
+			return err
+		}
+		type ended struct{ idHash, principal string }
+		all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (ended, error) {
+			var e ended
+			return e, r.Scan(&e.idHash, &e.principal)
+		})
+		if err != nil {
+			return err
+		}
+		people := map[string]bool{}
+		for _, e := range all {
+			if err := s.ended(ctx, tx, e.idHash); err != nil {
+				return err
+			}
+			people[e.principal] = true
+		}
+		if len(people) == 0 {
+			return nil
+		}
+		ps := make([]string, 0, len(people))
+		for p := range people {
+			ps = append(ps, p)
+		}
+		rows, err = tx.Query(ctx, "SELECT username FROM iam_account WHERE principal::text = ANY($1) ORDER BY username", ps)
+		if err != nil {
+			return err
+		}
+		usernames, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return err
+	})
+	return usernames, err
 }
 
 // securityChange is a security change of an account made here (a password change, a forced logout, a reset of the
