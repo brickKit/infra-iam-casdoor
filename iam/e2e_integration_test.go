@@ -175,6 +175,7 @@ func TestEndToEndAgainstCasdoor(t *testing.T) {
 	r.idleAndLogout()
 	r.comparison()
 	r.accountOperations()
+	r.replay()
 	for _, secret := range r.secrets {
 		assert.NotContains(t, r.logs.String(), secret, "no password or session cookie in the logs")
 	}

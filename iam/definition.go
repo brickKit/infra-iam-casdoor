@@ -20,7 +20,7 @@ import (
 // Identity of the component.
 const (
 	ID      = "infra/iam-casdoor"
-	Version = "3.0.24"
+	Version = "3.0.25"
 )
 
 // GRPCPort is the system surface's port (registry/ports.tsv).
@@ -49,6 +49,8 @@ const (
 	// OpResend is the redelivery of this member's streams (be-protocol P6.38: every component with streams serves it;
 	// any component of the deployment may call it).
 	OpResend = "infra.iam.account_status.resend"
+	// OpReplay is the replay of this member's evidence in a full recovery (be-protocol P12.19: the recovery tool only).
+	OpReplay = "infra.iam.account_status.replay"
 	Authz    = "infra/authz"
 )
 
@@ -92,6 +94,7 @@ func Definitions() *sdkauthz.Definitions {
 			{Key: OpAccountPull, ResourceType: Accounts, Purpose: "read", RiskClass: "low"},
 			{Key: OpAccountRead, ResourceType: Accounts, Purpose: "read", RiskClass: "low"},
 			{Key: OpResend, ResourceType: Accounts, Purpose: "read", RiskClass: "low"},
+			{Key: OpReplay, ResourceType: Accounts, Purpose: "action", RiskClass: "high", SideEffects: []string{"business_write"}},
 		}}
 }
 
@@ -147,7 +150,7 @@ func Keys() []config.Key {
 func Definition() component.Definition {
 	ref := &pullRef{} // the account stream's step before the echo reaches the module through it
 	return component.Definition{ID: ID, Version: Version, Keys: Keys(), Migrations: migrations(), GRPCPort: GRPCPort,
-		Streams: []events.Stream{{Name: StreamEnded, Partitions: 1}, accountStream(ref)}, Evidence: true, Resend: OpResend,
+		Streams: []events.Stream{{Name: StreamEnded, Partitions: 1}, accountStream(ref)}, Evidence: true, Resend: OpResend, Replay: OpReplay,
 		Authz: Definitions(),
 		New: func(rt *runtime.Runtime) (component.Module, error) {
 			m, err := New(rt)

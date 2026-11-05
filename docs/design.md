@@ -73,6 +73,8 @@ Casdoor（基础资源）、数据库与消息系统（必需）；授权成员�
 
 ## 实现状态
 
+3.0.25（底层先行第 4 项 T9c）：证据的重放（线协议 P12.19–P12.21，`replay.go`）：账号状态（停用、冻结、控制台停用、回退、重新启用）与强制登出按记录重新施加（安全版本推进、会话结束、状态事件发出），只写本地，不在事务里调 Casdoor，产品一侧由比较照常对齐；凭据收紧与产品侧的凭据变更不重放（协议 15：6.7 作废凭据代替）。SDK alpha.83；操作 `infra.iam.account_status.replay`；恢复阶段加 `replaying`。
+
 3.0.24（底层先行第 4 项 T8 的级联）：be-sdk-go alpha.81（恢复模式、补发）；两条流的补发（`be.source.v1.ResendService`，操作 `infra.iam.account_status.resend`，部署内任何组件可调用，线协议 P6.38）；清单声明 `RECOVERY_PHASE`；删掉证据一处说错的注释（意图编码不成时日志由写入器记，SDK alpha.79 起）。
 
 3.0.23（底层先行第 4 项 T6b）：证据（协议 15 的证据表，`evidence.go`）：
