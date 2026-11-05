@@ -14,12 +14,14 @@
 
 开发与测试环境另有一个换取入口：用户名与密码换访问令牌，供种子数据与自动化测试使用（A101）。它只在 `IAM_DEV_EXCHANGE` 为真时存在。
 
-下面几项随后续加入：
-- 在 Casdoor 自己的页面改密码、在控制台停用账号：按 Casdoor 的 `LastChangePasswordTime` 与账号状态定期全量比较发现，结束会话、加版本；
-- 补取时先向 Casdoor 拉取截至此刻的账号变更；强制登出与重置第二因素（授权管理的操作）；
-- 移动端的刷新令牌。
+在 Casdoor 里直接做的变更（3.0.21 起）：Casdoor 给不出可靠的变更序号（操作记录连失败的请求也写，webhook 不带序号），本组件每 `IAM_PULL_INTERVAL`（起始 1 分钟）、以及授权成员每次补取账号状态之前，把绑定的每个账号与 Casdoor 里的用户全量比较一次：
+- 在控制台停用或删除：照常生效——账号停用，安全状态版本加一，会话结束，停用的账号状态发出，本组件记下证据（Casdoor 的 `updatedTime` 作为产品坐标）；
+- 在本组件停用的账号在 Casdoor 里又被启用（控制台重新启用，或产品的库回退）：不认作启用，本组件在 Casdoor 里重新禁用它并记错误日志；本组件自己也拒绝它登录。重新启用只能经本组件办理；
+- 在 Casdoor 里改了密码（`lastChangePasswordTime`）或第二因素：安全状态版本加一，会话结束。经本组件改密码时，下一次比较不再计一次。
 
-Casdoor 给不出可靠的变更序号，本组件按外部来源声明：Casdoor 的操作记录连失败的请求也写，webhook 不带序号、约每 30 秒批量发出。
+比较读不到 Casdoor 时，授权成员的这次补取不写回声（水位不推进）。比较只看本组件配置的签发者绑定的账号。比较用登录应用的凭据（`CASDOOR_CLIENT_ID`、`CASDOOR_CLIENT_SECRET`）读写用户：这个应用要能管理它所在组织的用户（Casdoor 4.1.0 默认如此）。
+
+下面几项随后续加入：强制登出、重置第二因素与经本组件的停用、冻结、重新启用（授权管理的操作）；移动端的刷新令牌。
 
 ## 部署前准备
 
@@ -59,6 +61,7 @@ Casdoor 给不出可靠的变更序号，本组件按外部来源声明：Casdoo
 | `IAM_COOKIE_SECURE` | 会话 Cookie 是否 `Secure`，默认真，只有明文 HTTP 的开发环境关 |
 | `IAM_SESSION_IDLE` | 会话空闲超时，默认 30 分钟 |
 | `IAM_SESSION_ABSOLUTE` | 会话绝对超时，默认 12 小时 |
+| `IAM_PULL_INTERVAL` | 与 Casdoor 全量比较的间隔（安全 03 的 `P_pull`），默认 1 分钟；授权成员每次补取之前另比较一次 |
 | `CASDOOR_URL` | Casdoor 的后端通道：换取令牌、取公钥 |
 | `CASDOOR_PUBLIC_URL` | 浏览器访问 Casdoor 的地址 |
 | `CASDOOR_ISSUER` | Casdoor ID 令牌的 `iss`，即它的 `origin` 设置，默认等于 `CASDOOR_PUBLIC_URL` |

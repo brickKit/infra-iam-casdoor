@@ -30,6 +30,7 @@ type account struct {
 	principal       string
 	username        string // owner/name in Casdoor
 	securityVersion int64
+	status          string // active, disabled, security_frozen (security 09a)
 }
 
 // begin saves a login in flight and forgets the ones older than LoginTTL.
@@ -93,6 +94,7 @@ func (s store) adopt(ctx context.Context, issuer string) error {
 // principal returns the account bound to Casdoor's issuer and subject, binding a new principal on first sight (its
 // status goes out in the same transaction). The same subject of another issuer, or the same e-mail or login name, is
 // another account: nothing is taken over.
+// A disabled or frozen account is answered as it is: the caller refuses it (signedIn).
 func (s store) principal(ctx context.Context, issuer string, id providerUser) (account, error) {
 	a := account{username: id.Username}
 	err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
@@ -100,8 +102,8 @@ func (s store) principal(ctx context.Context, issuer string, id providerUser) (a
 		if err := tx.QueryRow(ctx, `INSERT INTO iam_account (principal, provider, issuer, provider_subject, username)
 			VALUES ($1, 'casdoor', $2, $3, $4)
 			ON CONFLICT (provider, issuer, provider_subject) DO UPDATE SET username = EXCLUDED.username
-			RETURNING principal::text, security_version, xmax = 0`, ids.New(), issuer, id.Subject, id.Username).
-			Scan(&a.principal, &a.securityVersion, &bound); err != nil {
+			RETURNING principal::text, security_version, status, xmax = 0`, ids.New(), issuer, id.Subject, id.Username).
+			Scan(&a.principal, &a.securityVersion, &a.status, &bound); err != nil {
 			return err
 		}
 		if !bound {
@@ -179,34 +181,43 @@ func (s store) end(ctx context.Context, idHash, reason string) error {
 	})
 }
 
-// securityChange is a security change of an account (a password change; later the forced logout, the reset of a
-// second factor, the deactivation): its version goes up by one, every live session but keep ends with reason, and the
-// account's status goes out with the new version, all in one transaction (P8.27). keep is the session that made the
-// change ("" for none): its next exchange gets a token of the new version.
+// securityChange is a security change of an account made here (a password change, a forced logout, a reset of the
+// second factors): its version goes up by one, every live session but keep ends with reason, and the account's status
+// goes out with the new version, all in one transaction (P8.27). keep is the session that made the change ("" for
+// none): its next exchange gets a token of the new version.
 func (s store) securityChange(ctx context.Context, principal, reason, keep string) (int64, error) {
 	var version int64
 	err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
-		if err := tx.QueryRow(ctx, `UPDATE iam_account SET security_version = security_version + 1
-			WHERE principal = $1 RETURNING security_version`, principal).Scan(&version); err != nil {
-			return err
-		}
-		rows, err := tx.Query(ctx, `UPDATE iam_session SET ended_at = now(), end_reason = $2
-			WHERE principal = $1 AND ended_at IS NULL AND id_hash <> $3 RETURNING id_hash`, principal, reason, keep)
-		if err != nil {
-			return err
-		}
-		ended, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return err
-		}
-		for _, h := range ended {
-			if err := s.ended(ctx, tx, h); err != nil {
-				return err
-			}
-		}
-		return s.status(ctx, tx, principal, version)
+		var err error
+		version, err = s.change(ctx, tx, principal, reason, keep)
+		return err
 	})
 	return version, err
+}
+
+// change is a security change inside the caller's transaction: the version up, the sessions but keep ended with
+// reason, the status (as the row now has it) out.
+func (s store) change(ctx context.Context, tx db.Tx, principal, reason, keep string) (int64, error) {
+	var version int64
+	if err := tx.QueryRow(ctx, `UPDATE iam_account SET security_version = security_version + 1
+		WHERE principal = $1 RETURNING security_version`, principal).Scan(&version); err != nil {
+		return 0, err
+	}
+	rows, err := tx.Query(ctx, `UPDATE iam_session SET ended_at = now(), end_reason = $2
+		WHERE principal = $1 AND ended_at IS NULL AND id_hash <> $3 RETURNING id_hash`, principal, reason, keep)
+	if err != nil {
+		return 0, err
+	}
+	ended, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, err
+	}
+	for _, h := range ended {
+		if err := s.ended(ctx, tx, h); err != nil {
+			return 0, err
+		}
+	}
+	return version, s.status(ctx, tx, principal, version)
 }
 
 // ended writes a session's end to the stream the edge reads by position.
@@ -219,11 +230,20 @@ func (s store) ended(ctx context.Context, tx db.Tx, idHash string) error {
 // status writes the account's status record (be.security.account_status, security 09a) with its security version;
 // the version is also the record's revision in this member's database.
 func (s store) status(ctx context.Context, tx db.Tx, principal string, version int64) error {
-	raw, digest, err := records.Seal("be.security.account_status", map[string]any{
+	var status, mark string
+	if err := tx.QueryRow(ctx, "SELECT status, security_mark FROM iam_account WHERE principal = $1", principal).
+		Scan(&status, &mark); err != nil {
+		return err
+	}
+	rec := map[string]any{
 		"record_type": "be.security.account_status", "schema": "1.0", "deployment": s.deployment, "authority": ID,
 		"id": principal, "revision": map[string]any{"domain": StreamAccount, "value": strconv.FormatInt(version, 10)},
 		"account": map[string]any{"deployment": s.deployment, "kind": "user", "id": principal},
-		"status":  "active", "security_version": version})
+		"status":  status, "security_version": version}
+	if mark != "none" {
+		rec["security_mark"] = mark
+	}
+	raw, digest, err := records.Seal("be.security.account_status", rec)
 	if err != nil {
 		return err
 	}

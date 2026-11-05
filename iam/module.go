@@ -9,6 +9,7 @@ import (
 	"github.com/brickKit/be-sdk-go/v3/errs"
 	"github.com/brickKit/be-sdk-go/v3/httpx"
 	"github.com/brickKit/be-sdk-go/v3/runtime"
+	"github.com/brickKit/be-sdk-go/v3/work"
 )
 
 // CookieName is the browser session's cookie: a random secret, HttpOnly, SameSite=Lax (protocol 20).
@@ -29,6 +30,7 @@ type Module struct {
 	secure   bool
 	after    string
 	dev      bool
+	pullEach time.Duration // P_pull
 }
 
 // New builds the module from its runtime.
@@ -42,7 +44,11 @@ func New(rt *runtime.Runtime) (*Module, error) {
 		impl: cfg.String("IMPLEMENTATION_INSTANCE"), issuer: cfg.String("IAM_TOKEN_ISSUER"),
 		audience: "be:deployment:" + cfg.String("DEPLOYMENT_ID"), ttl: cfg.Duration("IAM_ACCESS_TOKEN_TTL"),
 		idle: cfg.Duration("IAM_SESSION_IDLE"), absolute: cfg.Duration("IAM_SESSION_ABSOLUTE"),
-		secure: cfg.Bool("IAM_COOKIE_SECURE"), after: cfg.String("IAM_AFTER_LOGIN_URL"), dev: cfg.Bool("IAM_DEV_EXCHANGE")}
+		secure: cfg.Bool("IAM_COOKIE_SECURE"), after: cfg.String("IAM_AFTER_LOGIN_URL"), dev: cfg.Bool("IAM_DEV_EXCHANGE"),
+		pullEach: cfg.Duration("IAM_PULL_INTERVAL")}
+	if m.pullEach <= 0 {
+		return nil, errs.New(errs.ReasonRequestInvalid, "IAM_PULL_INTERVAL must be positive")
+	}
 	issuerOfIDTokens := cfg.String("CASDOOR_ISSUER")
 	if issuerOfIDTokens == "" {
 		issuerOfIDTokens = cfg.String("CASDOOR_PUBLIC_URL")
@@ -71,6 +77,24 @@ func New(rt *runtime.Runtime) (*Module, error) {
 		rt.Logger.Warn("the development token exchange is on (IAM_DEV_EXCHANGE): never in a production deployment (A101)")
 	}
 	return m, nil
+}
+
+// signedIn binds the verified Casdoor user and refuses an account this member has disabled or frozen: Casdoor may
+// still let it in (a console re-enable or a product rollback, until the next comparison forbids it there again).
+func (m *Module) signedIn(ctx context.Context, id providerUser) (account, error) {
+	a, err := m.store.principal(ctx, m.casdoor.issuer, id)
+	if err == nil && a.status != "active" {
+		m.rt.Logger.Warn("a sign-in of an account disabled here was refused", "principal", a.principal, "status", a.status)
+		return a, errs.New(errs.ReasonTokenInvalid, "the account cannot sign in")
+	}
+	return a, err
+}
+
+// Jobs declares the periodic comparison with Casdoor (security 03's P_pull).
+func (m *Module) Jobs(j *work.Jobs) error {
+	j.Add(work.Job{Name: JobPull, Kind: work.Singleton, Effect: work.IdempotentExternal, Interval: m.pullEach,
+		MaxAttempts: work.Unlimited, Timeout: 2 * time.Minute, Handle: m.pull})
+	return nil
 }
 
 // Start gives the accounts bound before the issuer was kept the configured Casdoor's issuer (store.adopt).
@@ -123,7 +147,7 @@ func (m *Module) callback(c *httpx.Context) error {
 	if err != nil {
 		return err
 	}
-	a, err := m.store.principal(c.Ctx(), m.casdoor.issuer, id)
+	a, err := m.signedIn(c.Ctx(), id)
 	if err != nil {
 		return err
 	}
@@ -192,7 +216,7 @@ func (m *Module) devToken(c *httpx.Context) error {
 	if err != nil {
 		return err
 	}
-	a, err := m.store.principal(c.Ctx(), m.casdoor.issuer, id)
+	a, err := m.signedIn(c.Ctx(), id)
 	if err != nil {
 		return err
 	}

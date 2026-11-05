@@ -20,7 +20,7 @@ import (
 // Identity of the component.
 const (
 	ID      = "infra/iam-casdoor"
-	Version = "3.0.20"
+	Version = "3.0.21"
 )
 
 // GRPCPort is the system surface's port (registry/ports.tsv).
@@ -101,6 +101,8 @@ func Keys() []config.Key {
 		{Name: "CASDOOR_CLIENT_ID", Type: config.String, Required: true},
 		{Name: "CASDOOR_CLIENT_SECRET", Type: config.String, Required: true, Secret: true},
 		// A101: development and test deployments only; the go-live check confirms it is off
+		// P_pull (security 03): how often every bound account is compared with Casdoor, besides before every echo
+		{Name: "IAM_PULL_INTERVAL", Type: config.Duration, Default: DefaultPullInterval},
 		{Name: "IAM_DEV_EXCHANGE", Type: config.Boolean, Default: false},
 		{Name: "IAM_DEV_CLIENT_ID", Type: config.String},
 		{Name: "IAM_DEV_CLIENT_SECRET", Type: config.String, Secret: true},
@@ -109,8 +111,15 @@ func Keys() []config.Key {
 
 // Definition is the component as the launcher and the shells take it.
 func Definition() component.Definition {
+	ref := &pullRef{} // the account stream's step before the echo reaches the module through it
 	return component.Definition{ID: ID, Version: Version, Keys: Keys(), Migrations: migrations(), GRPCPort: GRPCPort,
-		Streams: []events.Stream{{Name: StreamEnded, Partitions: 1}, accountStream},
+		Streams: []events.Stream{{Name: StreamEnded, Partitions: 1}, accountStream(ref)},
 		Authz:   Definitions(),
-		New:     func(rt *runtime.Runtime) (component.Module, error) { return New(rt) }}
+		New: func(rt *runtime.Runtime) (component.Module, error) {
+			m, err := New(rt)
+			if err == nil {
+				ref.set(m.reconcile)
+			}
+			return m, err
+		}}
 }

@@ -11,9 +11,13 @@ import (
 // accountStream is the account status: a watermark source of the authorization member (security 03's internal
 // sources, D64), so it answers the member's pulls and its batch reads and snapshots (P9.13, P9.30). An account is never
 // deleted: an ID that is not one is purged (never existed).
-var accountStream = events.Stream{Name: StreamAccount, Partitions: 4,
-	Watermark: &events.Watermark{Operation: OpAccountPull, Pullers: []string{Authz}},
-	Records:   &events.Records{Operation: OpAccountRead, Readers: []string{Authz}, Read: readAccounts, Page: pageAccounts}}
+// Before a pull's echoes the accounts are compared with Casdoor (P9.16, security 03): what changed there comes before
+// the echo; when Casdoor cannot be read no echo is written.
+func accountStream(ref *pullRef) events.Stream {
+	return events.Stream{Name: StreamAccount, Partitions: 4,
+		Watermark: &events.Watermark{Operation: OpAccountPull, Pullers: []string{Authz}, Before: ref.before},
+		Records:   &events.Records{Operation: OpAccountRead, Readers: []string{Authz}, Read: readAccounts, Page: pageAccounts}}
+}
 
 // readAccounts answers every ID with the status record that went out last: the same bytes as its event.
 func readAccounts(ctx context.Context, tx db.Tx, ids []string) ([]events.ReadResult, error) {

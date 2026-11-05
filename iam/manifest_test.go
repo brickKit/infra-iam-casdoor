@@ -19,6 +19,7 @@ var ownKeys = map[string]string{
 	"IAM_CALLBACK_URL":     "the redirect URI registered for the application in Casdoor: <this member's public URL>/api/iam/callback",
 	"IAM_COOKIE_SECURE":    "the session cookie is Secure; default true (false only for plain-HTTP development)",
 	"IAM_DEV_CLIENT_ID":    "the development client with the password grant (IAM_DEV_EXCHANGE)",
+	"IAM_PULL_INTERVAL":    "a duration (e.g. 2s, 500ms); default 1m: P_pull, how often every bound account is compared with Casdoor (security 03), besides before every echo",
 	"IAM_DEV_EXCHANGE":     "development and test deployments only (A101): POST /api/iam/dev/token exchanges a user's password for a token; default false, and the go-live check confirms it is off",
 	"IAM_SESSION_ABSOLUTE": "a duration (e.g. 2s, 500ms); default 12h (protocol 20)",
 	"IAM_SESSION_IDLE":     "a duration (e.g. 2s, 500ms); default 30m (protocol 20)",

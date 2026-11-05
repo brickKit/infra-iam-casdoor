@@ -121,5 +121,21 @@ func (m *Module) changePassword(c *httpx.Context) error {
 	if _, err := m.store.securityChange(c.Ctx(), a.principal, "password", h); err != nil {
 		return err
 	}
+	m.ownPassword(c.Ctx(), a)
 	return c.NoContent(http.StatusNoContent)
+}
+
+// ownPassword takes Casdoor's new password time as the comparison's baseline: the change made here is not one made in
+// Casdoor itself, and the next comparison must not end the sessions again (the one that changed it kept). When Casdoor
+// cannot be read now, the comparison counts it once more: one more re-login, never a missed change.
+func (m *Module) ownPassword(ctx context.Context, a account) {
+	u, err := m.casdoor.user(ctx, a.username)
+	if err == nil {
+		at, _ := u["lastChangePasswordTime"].(string)
+		err = m.store.baselinePassword(ctx, a.principal, at)
+	}
+	if err != nil {
+		m.rt.Logger.Warn("the password change's baseline was not recorded: the next comparison ends the sessions again",
+			"principal", a.principal, "error", err.Error())
+	}
 }

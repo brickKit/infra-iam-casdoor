@@ -4,7 +4,7 @@ kind: Component
 metadata:
   id: infra/iam-casdoor
   name: Identity (Casdoor)
-  version: 3.0.20
+  version: 3.0.21
   description: "The identity member in front of Casdoor: browser login with PKCE and a server-side session, short access tokens it signs for the platform principal, its public keys; a development-only password exchange (A101)"
   repository: https://github.com/brickKit/infra-iam-casdoor
 
@@ -90,6 +90,9 @@ configSchema:
     IAM_DEV_EXCHANGE:
       description: 'development and test deployments only (A101): POST /api/iam/dev/token exchanges a user''s password for a token; default false, and the go-live check confirms it is off; SDK default false'
       type: boolean
+    IAM_PULL_INTERVAL:
+      description: 'a duration (e.g. 2s, 500ms); default 1m: P_pull, how often every bound account is compared with Casdoor (security 03), besides before every echo; a duration (e.g. 2s, 500ms); SDK default 60s'
+      type: string
     IAM_ISSUER:
       description: 'process-level: the same for every member of a shell'
       type: string
