@@ -155,7 +155,7 @@ func (m *Module) Routes(r *httpx.Routes) error {
 	r.Add(httpx.Route{Method: "POST", Path: "/api/iam/password", Public: true, ReadOnlyOpen: true, Handle: m.changePassword})
 	r.Add(httpx.Route{Method: "GET", Path: "/api/iam/jwks", Public: true, Handle: m.jwks})
 	if m.dev {
-		r.Add(httpx.Route{Method: "POST", Path: "/api/iam/dev/token", Public: true, Handle: m.devToken})
+		r.Add(httpx.Route{Method: "POST", Path: "/api/iam/dev/token", Public: true, ReadOnlyOpen: true, Handle: m.devToken})
 	}
 	m.routesForAccounts(r)
 	return nil

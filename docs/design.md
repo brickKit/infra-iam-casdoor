@@ -73,6 +73,8 @@ Casdoor（基础资源）、数据库与消息系统（必需）；授权成员�
 
 ## 实现状态
 
+3.0.31（底层先行第 4 项 T11 演练找出的）：开发换取（`/api/iam/dev/token`，只在 `IAM_DEV_EXCHANGE` 打开时有）也标为只读开放可用：它是登录，`read_only` 本来就签发令牌（演练第 4 次在只读开放时用它登录答 `MAINTENANCE`）。`scripts/dev_setup.py --users-only` 把测试账号真的复原成种子的样子：Casdoor 的 `update-user` 不改密码，已有账号的密码改用 `set-password` 复原（已是这个密码时 Casdoor 拒绝，当作已复原），第二因素清掉（演练在 Casdoor 里改过授权管理员的密码，下一次建格的种子登录失败）。be-sdk-go alpha.97（恢复阶段里证据转运照常运行）；依赖换到新版本。
+
 3.0.30（底层先行第 4 项 T11b）：整套恢复的 6.7（Casdoor 不在恢复组内，A141：只核对、不作废）：凭据收紧（`credential_tightening`：本成员改的密码、重置的第二因素；`credential_tightening_in_product`：比较在 Casdoor 里看到的变更）不重放，重放时对照 Casdoor 核对（线协议 P12.20，SDK 的 `Replays.Check`，`replay.go` 的 `checkCredential`）：改密码要 Casdoor 的改密时刻不早于记录时刻减去声明的时钟偏差（2 秒）；重置第二因素要 Casdoor 现在没有第二因素，或此后改过；Casdoor 里看到的变更要 Casdoor 的更新时刻不早于当时看到的。不成立（Casdoor 自己回退了）或账号不在，答 `inconsistent`，恢复工具列复核。be-sdk-go alpha.96（与整套系统同一个版本）；依赖换到新版本。
 
 3.0.29（底层先行第 4 项 T10 的级联）：be-sdk-go alpha.95（与整套系统同一个版本：恢复阶段里审计转运照常运行、外壳里的阶段归进程、单号的审计）；依赖换到新版本；代码地图补上恢复核对的文件。

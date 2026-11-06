@@ -21,6 +21,7 @@ import http.cookiejar
 import json
 import os
 import sys
+import urllib.parse
 import urllib.request
 
 E = os.environ
@@ -65,9 +66,21 @@ def upsert(kind, owner, name, wanted):
     if got:
         call(f"/api/update-{kind}?id={owner}/{name}", {**got, **wanted})
         print(f"{kind} {owner}/{name}: updated")
-    else:
-        call(f"/api/add-{kind}", {"owner": owner, "name": name, "createdTime": "2026-10-19T00:00:00Z", **wanted})
-        print(f"{kind} {owner}/{name}: added")
+        return True
+    call(f"/api/add-{kind}", {"owner": owner, "name": name, "createdTime": "2026-10-19T00:00:00Z", **wanted})
+    print(f"{kind} {owner}/{name}: added")
+    return False
+
+
+def set_password(owner, name, password):
+    """Casdoor's update-user leaves a password as it is: an existing account's goes back by set-password (a drill or a
+    test may have changed it in Casdoor). Casdoor refuses the password the account already has: nothing to do then."""
+    req = urllib.request.Request(BASE + "/api/set-password", data=urllib.parse.urlencode(
+        {"userOwner": owner, "userName": name, "newPassword": password}).encode())
+    with opener.open(req, timeout=10) as r:
+        out = json.loads(r.read())
+    if out.get("status") not in (None, "ok") and "must be different" not in (out.get("msg") or ""):
+        sys.exit(f"/api/set-password {owner}/{name}: {out.get('msg')}")
 
 
 def application(name, client_id, secret, grants, redirects):
@@ -85,8 +98,14 @@ def main():
     if "--users-only" not in sys.argv[1:]:
         applications()
     for user, display in users.items():
-        upsert("user", ORG, user, {"displayName": PREFIX + display, "type": "normal-user",
-                                   "password": E["IAM_TEST_PASSWORD"], "isForbidden": False, "signupApplication": "be-iam"})
+        # as seeded: allowed, no second factor, the test password
+        existed = upsert("user", ORG, user, {"displayName": PREFIX + display, "type": "normal-user",
+                                             "password": E["IAM_TEST_PASSWORD"], "isForbidden": False,
+                                             "signupApplication": "be-iam", "mfaEmailEnabled": False,
+                                             "mfaPhoneEnabled": False, "preferredMfaType": "", "totpSecret": "",
+                                             "recoveryCodes": []})
+        if existed:
+            set_password(ORG, user, E["IAM_TEST_PASSWORD"])
 
 
 def applications():

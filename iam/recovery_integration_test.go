@@ -58,6 +58,9 @@ func (r *iamRun) recovery() {
 	r.secrets = append(r.secrets, again.Value)
 	_, err = r.exchange(again, true)
 	assert.NoError(t, err, "tokens again once open read-only")
+	// the development exchange is a sign-in as well: open read-only too (T11's drill could not sign in through it)
+	resp, b := send(t, "POST", itBase+"/api/iam/dev/token", map[string]string{"username": "test.alice", "password": r.password})
+	assert.Equal(t, 200, resp.StatusCode, "the development exchange once open read-only: %s", string(b))
 }
 
 // endReason is a session's end reason ("" while it is live).

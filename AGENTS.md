@@ -23,7 +23,7 @@
 | `iam/migrations/` | 表 |
 | `contract/events/` | 发出的两种事件的 schema（`iam/manifest_test.go` 核对清单） |
 | `docs/design.md` | 设计：术语、数据、规则、接口、实现状态、未决问题 |
-| `scripts/dev_setup.py` | 开发与测试环境里准备 Casdoor 的应用、开发客户端与测试用户；`TEST_USERS` 是种子数据的测试账号（账号名是轻量契约，只增不改），`make seed` 只建账号 |
+| `scripts/dev_setup.py` | 开发与测试环境里准备 Casdoor 的应用、开发客户端与测试用户；`TEST_USERS` 是种子数据的测试账号（账号名是轻量契约，只增不改），`make seed` 只建账号；`--users-only` 把已有的测试账号复原成种子的样子（允许登录、没有第二因素、测试密码：密码经 `set-password`，`update-user` 不改它） |
 
 ## 构建与测试
 
