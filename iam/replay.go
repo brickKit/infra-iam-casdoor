@@ -107,7 +107,7 @@ func (s store) usernameOf(ctx context.Context, principal string) (string, error)
 // change did; a status the account already has is left as it is.
 func (s store) replayStatus(ctx context.Context, tx db.Tx, rec evidence.Replayed) error {
 	status, _ := rec.Change["status"].(string)
-	if status != "active" && status != "disabled" && status != "frozen" {
+	if status != "active" && status != "disabled" && status != "security_frozen" { // the account's statuses (09a)
 		return fmt.Errorf("the record carries no account status (%q)", status)
 	}
 	mark, _ := rec.Change["security_mark"].(string)

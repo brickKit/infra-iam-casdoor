@@ -79,8 +79,13 @@ func (r *iamRun) replay() {
 		"source": "adapter"})))
 	status, _ = account()
 	assert.Equal(t, "active", status)
+	// a freeze (T13e's drill: its replay answered an internal error, the status's value is security_frozen)
+	assert.Equal(t, evidence.Applied, replay(record("account_status", "effective", p, map[string]any{"status": "security_frozen",
+		"source": "adapter"})))
+	status, _ = account()
+	assert.Equal(t, "security_frozen", status)
 	assert.Equal(t, evidence.Dangling, replay(record("account_status", "effective", ids.New().String(),
-		map[string]any{"status": "frozen", "source": "adapter"})))
+		map[string]any{"status": "security_frozen", "source": "adapter"})))
 	r.credentialChecks(record, replay)
 }
 
