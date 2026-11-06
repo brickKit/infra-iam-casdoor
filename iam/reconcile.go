@@ -181,7 +181,11 @@ func (s store) compare(ctx context.Context, principal string, u productUser, rea
 		if reason == "" {
 			return nil
 		}
-		version, err := s.change(ctx, tx, principal, reason, "")
+		evidenceID := ""
+		if reason == "disabled" && p != nil { // the console disablement's intent names the status record (09a)
+			evidenceID = p.ID
+		}
+		version, err := s.changeEv(ctx, tx, principal, reason, "", "", evidenceID)
 		if err != nil {
 			return err
 		}

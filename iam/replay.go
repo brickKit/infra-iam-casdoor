@@ -125,7 +125,7 @@ func (s store) replayStatus(ctx context.Context, tx db.Tx, rec evidence.Replayed
 		WHERE principal = $1`, rec.Object.ID, status, mark); err != nil {
 		return err
 	}
-	version, err := s.changeWith(ctx, tx, rec.Object.ID, reasonFor(status), "", "")
+	version, err := s.changeEv(ctx, tx, rec.Object.ID, reasonFor(status), "", "", rec.ID) // the original record named
 	if err != nil {
 		return err
 	}

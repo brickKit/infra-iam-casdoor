@@ -46,12 +46,30 @@ func settle(ctx context.Context, p *evidence.Pending, done bool) {
 
 // general records a change that needs no intent, in the caller's transaction.
 func (s store) general(ctx context.Context, tx db.Tx, category, principal string, version int64, change map[string]any) error {
-	if s.ev == nil {
-		return nil
-	}
-	_, err := s.ev.General(ctx, tx, category, principal, evidence.Object{Type: AccountType, ID: principal,
-		Version: strconv.FormatInt(version, 10)}, change)
+	_, err := s.generalID(ctx, tx, category, principal, version, change)
 	return err
+}
+
+// generalID is general returning the record's identity ("" when this member writes no evidence).
+func (s store) generalID(ctx context.Context, tx db.Tx, category, principal string, version int64, change map[string]any) (string, error) {
+	if s.ev == nil {
+		return "", nil
+	}
+	return s.ev.General(ctx, tx, category, principal, evidence.Object{Type: AccountType, ID: principal,
+		Version: strconv.FormatInt(version, 10)}, change)
+}
+
+// evidenceStep writes a status change's evidence in its transaction and names the record (empty: none).
+type evidenceStep func(context.Context, db.Tx) (string, error)
+
+// concluded is the step of a tightening whose intent p is: its conclusion, named by the intent's identity.
+func concluded(p *evidence.Pending) evidenceStep {
+	return func(ctx context.Context, tx db.Tx) (string, error) {
+		if p == nil {
+			return "", nil
+		}
+		return p.ID, p.Effective(ctx, tx)
+	}
 }
 
 func run(ctx context.Context, tx db.Tx, after func(context.Context, db.Tx) error) error {

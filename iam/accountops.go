@@ -138,12 +138,12 @@ func (m *Module) statusHTTP(c *httpx.Context, op, target string) error {
 		change["confirmation"] = confirmation
 	}
 	var p *evidence.Pending
-	after := func(ctx context.Context, tx db.Tx) error { // a re-enable: a general record (item 4 T6b)
-		return m.store.general(ctx, tx, "account_reenable", a.principal, a.securityVersion, change)
-	}
+	step := evidenceStep(func(ctx context.Context, tx db.Tx) (string, error) { // a re-enable: a general record (T6b)
+		return m.store.generalID(ctx, tx, "account_reenable", a.principal, a.securityVersion, change)
+	})
 	if target != "active" { // a disablement or freeze: its intent before this member's change
 		p = m.store.intent(ctx, "account_status", a.principal, a.securityVersion, change)
-		after = effective(p)
+		step = concluded(p)
 	}
 	done := false
 	defer func() { settle(ctx, p, done) }()
@@ -155,7 +155,7 @@ func (m *Module) statusHTTP(c *httpx.Context, op, target string) error {
 			return err
 		}
 	}
-	version, err := m.store.setStatus(ctx, a.principal, target, mark, confirmation, requester, a.securityVersion, reasonFor(target), after)
+	version, err := m.store.setStatus(ctx, a.principal, target, mark, confirmation, requester, a.securityVersion, reasonFor(target), step)
 	if err != nil {
 		return err
 	}
@@ -266,9 +266,9 @@ func (s store) fence(ctx context.Context, principal string) error {
 
 // setStatus is a status change made here on a request: on the version the authorization member was asked about
 // (another change since: CHANGE_REVISION_STALE, ask again), one security change carrying the confirmation, with the
-// evidence of who asked.
+// evidence of who asked; the status record names the evidence record (09a).
 func (s store) setStatus(ctx context.Context, principal, status, mark, confirmation, requester string, on int64,
-	reason string, after func(context.Context, db.Tx) error) (int64, error) {
+	reason string, step evidenceStep) (int64, error) {
 	var version int64
 	err := s.db.Tx(ctx, func(ctx context.Context, tx db.Tx) error {
 		var now int64
@@ -283,17 +283,17 @@ func (s store) setStatus(ctx context.Context, principal, status, mark, confirmat
 			WHERE principal = $1`, principal, status, mark); err != nil {
 			return err
 		}
-		var err error
-		if version, err = s.changeWith(ctx, tx, principal, reason, "", confirmation); err != nil {
+		evidenceID, err := step(ctx, tx) // the evidence first, in the same transaction: the status record names it
+		if err != nil {
+			return err
+		}
+		if version, err = s.changeEv(ctx, tx, principal, reason, "", confirmation, evidenceID); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO iam_status_evidence (id, principal, status, source, security_version, requested_by,
 			confirmation) VALUES ($1, $2, $3, 'adapter', $4, $5::text::uuid, NULLIF($6, '')::uuid)`, ids.New(), principal, status,
 			version, requester, confirmation)
-		if err != nil {
-			return err
-		}
-		return run(ctx, tx, after) // the evidence, in the same transaction
+		return err
 	})
 	return version, err
 }

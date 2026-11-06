@@ -111,6 +111,7 @@ func (r *iamRun) comparison() {
 	console := r.evidence(p, "account_status", "effective", 1)
 	require.Len(t, console["intent"], 1, "the intent before the comparison's transaction")
 	assert.Equal(t, "console", console["effective"][0]["change"].(map[string]any)["source"])
+	assert.Equal(t, console["effective"][0]["id"], r.lastStatus(p)["evidence"], "a console disablement names its record (09a)")
 	_, err = r.exchange(session, true)
 	assert.True(t, errs.Is(err, "be", errs.ReasonSessionEnded), "the session ended: %v", err)
 	st, _ = r.statusOf(elsewhere)

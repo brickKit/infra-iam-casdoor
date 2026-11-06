@@ -4,6 +4,7 @@ package iam
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"strconv"
 	"strings"
@@ -62,6 +63,10 @@ func (r *iamRun) replay() {
 
 	disable := record("account_status", "effective", p, map[string]any{"status": "disabled", "source": "adapter"})
 	assert.Equal(t, evidence.Applied, replay(disable))
+	var disabled map[string]any
+	require.NoError(t, json.Unmarshal(disable, &disabled))
+	assert.Equal(t, disabled["id"], r.lastStatus(p)["evidence"],
+		"a replayed status names the original evidence record: the signal_ref is the same across the recovery")
 	status, v := account()
 	assert.Equal(t, "disabled", status)
 	assert.Equal(t, v0+1, v, "the security version up, as the change did")

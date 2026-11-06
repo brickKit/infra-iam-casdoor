@@ -256,10 +256,16 @@ func (s store) change(ctx context.Context, tx db.Tx, principal, reason, keep str
 // changeWith is change carrying a confirmation in the status record (a protected status change, A134); every other
 // security change sends none, so a confirmation goes out with the change it confirmed only.
 func (s store) changeWith(ctx context.Context, tx db.Tx, principal, reason, keep, confirmation string) (int64, error) {
+	return s.changeEv(ctx, tx, principal, reason, keep, confirmation, "")
+}
+
+// changeEv is changeWith naming the evidence record that made a status change (09a's account_status.evidence): the
+// status record carries it, and only the change it made.
+func (s store) changeEv(ctx context.Context, tx db.Tx, principal, reason, keep, confirmation, evidenceID string) (int64, error) {
 	var version int64
 	if err := tx.QueryRow(ctx, `UPDATE iam_account SET security_version = security_version + 1,
-		status_confirmation = NULLIF($2, '')::uuid WHERE principal = $1 RETURNING security_version`, principal,
-		confirmation).Scan(&version); err != nil {
+		status_confirmation = NULLIF($2, '')::uuid, status_evidence = NULLIF($3, '')::uuid WHERE principal = $1
+		RETURNING security_version`, principal, confirmation, evidenceID).Scan(&version); err != nil {
 		return 0, err
 	}
 	rows, err := tx.Query(ctx, `UPDATE iam_session SET ended_at = now(), end_reason = $2
@@ -290,9 +296,9 @@ func (s store) ended(ctx context.Context, tx db.Tx, idHash string) error {
 // the version is also the record's revision in this member's database.
 func (s store) status(ctx context.Context, tx db.Tx, principal string, version int64) error {
 	var status, mark string
-	var confirmation *string
-	if err := tx.QueryRow(ctx, "SELECT status, security_mark, status_confirmation::text FROM iam_account WHERE principal = $1",
-		principal).Scan(&status, &mark, &confirmation); err != nil {
+	var confirmation, evidenceID *string
+	if err := tx.QueryRow(ctx, `SELECT status, security_mark, status_confirmation::text, status_evidence::text FROM iam_account
+		WHERE principal = $1`, principal).Scan(&status, &mark, &confirmation, &evidenceID); err != nil {
 		return err
 	}
 	rec := map[string]any{
@@ -305,6 +311,9 @@ func (s store) status(ctx context.Context, tx db.Tx, principal string, version i
 	}
 	if confirmation != nil {
 		rec["confirmation"] = *confirmation
+	}
+	if evidenceID != nil {
+		rec["evidence"] = *evidenceID
 	}
 	raw, digest, err := records.Seal("be.security.account_status", rec)
 	if err != nil {

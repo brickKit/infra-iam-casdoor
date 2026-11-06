@@ -158,6 +158,8 @@ func (r *iamRun) accountOperations() {
 	assert.Equal(t, recs["intent"][0]["id"], recs["effective"][0]["id"])
 	assert.Equal(t, "disabled", recs["effective"][0]["change"].(map[string]any)["status"])
 	assert.NotNil(t, recs["effective"][0]["position"])
+	assert.Equal(t, recs["effective"][0]["id"], r.lastStatus(p)["evidence"],
+		"the status record names the evidence record that made it (09a: the authorization member's signal_ref)")
 	// the comparison right after it is no rollback, and the same request again changes nothing
 	require.NoError(t, r.pullAsAuthz())
 	code, out = r.op(sectest.Alice, "POST", path("disable"), map[string]any{})
@@ -213,6 +215,7 @@ func (r *iamRun) accountOperations() {
 	assert.Equal(t, confirmation, r.lastStatus(p)["confirmation"])
 	reenable := r.evidence(p, "account_reenable", "general", 1)["general"][0]
 	assert.Equal(t, confirmation, reenable["change"].(map[string]any)["confirmation"], "the re-enable's evidence")
+	assert.Equal(t, reenable["id"], r.lastStatus(p)["evidence"], "a re-enable names its general record")
 	assert.Contains(t, r.logs.String(), `"event":"admin_account_status"`, "an admin's account status change is a severe alert")
 	assert.Equal(t, 200, signIn())
 	require.NoError(t, r.pullAsAuthz())
@@ -233,6 +236,8 @@ func (r *iamRun) accountOperations() {
 	r.evidence(p, "session_revocation", "effective", 1)
 	_, carried := r.lastStatus(p)["confirmation"]
 	assert.False(t, carried, "a confirmation belongs to the change it confirmed")
+	_, carried = r.lastStatus(p)["evidence"]
+	assert.False(t, carried, "a status change's evidence goes out with it only")
 
 	// a reset of the second factors: Casdoor's removed, one security change, not counted again by the comparison
 	casdoorUser(r, ca, name, func(u map[string]any) { u["email"], u["mfaEmailEnabled"] = name+"@example.test", true })
