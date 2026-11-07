@@ -19,7 +19,7 @@
 | 平台主体 | 部署内稳定的身份（UUIDv7）；令牌的 `sub`；Casdoor 的用户 ID 不离开本组件 | `PrincipalRef`、`iam_account` |
 | 会话 | 浏览器登录后在服务端保存的会话；浏览器只拿到 `HttpOnly`、`SameSite=Lax` 的会话 Cookie，库里只存它的摘要 | `iam_session` |
 | 登录中的请求 | 授权码加 PKCE 的一次登录；状态参数只存摘要、只能用一次 | `iam_login` |
-| 访问令牌 | 本组件签名的短期令牌（`at+jwt`），带账号的安全状态版本 `be_sv`；只有边缘按会话换取；令牌类型不能互换 | `tokens.go` |
+| 访问令牌 | 本组件签名的短期令牌（`at+jwt`），带账号的安全状态版本 `be_sv`；只有边缘按会话换取；令牌类型不能互换 | `internal/login` 的 `Issue` |
 | 安全状态版本 | 账号的一个只增的整数：改密码（以后还有强制登出、重置第二因素、停用）时加一；令牌带签发时的版本，入口组件按授权视图里的版本判断令牌陈旧（线协议 P8.25、P8.27） | `iam_account.security_version` |
 | 会话摘要 | 会话 Cookie 值的小写十六进制 SHA-256：库里存它，边缘拿它换取（P8.28） | `hashOf` |
 | 签名密钥 | Ed25519；`kid` 是 RFC 7638 指纹；另备一把下一把密钥，轮换时 SDK 重读 | `IAM_SIGNING_KEY_FILE`、`IAM_SIGNING_KEY_NEXT_FILE` |
@@ -59,8 +59,8 @@
 
 本版：
 - 用户面的登录相关路由是公开的（登录之前没有令牌），由会话 Cookie 保护：`GET /api/iam/login`、`GET /api/iam/callback`、`POST /api/iam/logout`、`POST /api/iam/password`、`GET /api/iam/jwks`；开发环境另有 `POST /api/iam/dev/token`。
-- 账号操作（3.0.22）是受保护的路由，资源 `infra.iam.account`、主体维度 `account`：`GET /api/iam/accounts/{principal}`，`POST …/disable`、`…/freeze`、`…/logout`（只减少访问）、`…/enable`、`…/reset-second-factor`（`accountops.go`）。
-- 系统面（端口 9200）：`be.session.v1.SessionService` 的 `Exchange` 与 `Ended`，只许 `infra/edge`；账号状态流的补取（`be.source.v1.WatermarkService`）与批量读取、快照（`be.source.v1.RecordService`），只许 `infra/authz`，都是 SDK 自带的标准方法（A115、A121），本组件只给出两个读取函数（`iam/accounts.go`）。
+- 账号操作（3.0.22）是受保护的路由，资源 `infra.iam.account`、主体维度 `account`：`GET /api/iam/accounts/{principal}`，`POST …/disable`、`…/freeze`、`…/logout`（只减少访问）、`…/enable`、`…/reset-second-factor`（`internal/accounts`）。
+- 系统面（端口 9200）：`be.session.v1.SessionService` 的 `Exchange` 与 `Ended`，只许 `infra/edge`；账号状态流的补取（`be.source.v1.WatermarkService`）与批量读取、快照（`be.source.v1.RecordService`），只许 `infra/authz`，都是 SDK 自带的标准方法（A115、A121），本组件只给出两个读取函数（`internal/accounts/accounts.go`）。
 
 ## 事件
 
@@ -72,6 +72,8 @@
 Casdoor（基础资源）、数据库与消息系统（必需）；授权成员：提交定义，账号状态变更之前调用 `AccountService.CheckAccountChange`（`contract-infra-authz` alpha.4）。可选：外部身份源（按客户）；`mdm/employee`（只经事件，开通账号，以后）；`infra/audit`（兼任证据存储，停用的意图，以后）。
 
 ## 实现状态
+
+3.0.39：代码按业务模块分层，行为不变：入口包 `iam/` 只组装，业务在 `internal/` 下（`login`、`sessions`、`accounts`、`reconcile`、`replay`，下面是 `core`、`provider`、`keys`），集成测试在 `itest/`、按模块分文件；每个代码目录一份 `AGENTS.md`。
 
 3.0.38：be-sdk-go alpha.116（全系统同一个 SDK 版本；冷热数据：每天的孤儿清理、擦除作废导出、已销毁的记录从决定起答不存在、释放在事务之外读备份记录）
 

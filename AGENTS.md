@@ -4,31 +4,43 @@
 
 ## 代码地图
 
-| 文件 | 内容 |
+代码按业务模块分层。**先读这一节，再进目录**：每个代码目录都有自己的 `AGENTS.md`（同目录的 `CLAUDE.md` 让 Claude Code 读这个目录的文件时自动带上它），写这一层负责什么、不负责什么、每个文件、依赖谁、测在哪。
+
+| 目录 | 是什么 |
 | --- | --- |
 | `main.go` | 单跑的入口 |
-| `iam/definition.go` | 组件定义、配置键、迁移、授权定义（系统方法的操作）、两条事件流 |
-| `iam/module.go` | 路由：登录、回调、登出、改密码、JWKS、开发换取（公开）与账号操作（受保护）；启动时接收旧行的签发者 |
-| `iam/sessions.go` | 系统面 `be.session.v1.SessionService`（只许 `infra/edge`）：换取、已结束的会话；改密码 |
-| `iam/casdoor.go` | 对 Casdoor 的 OIDC 客户端：授权地址与 PKCE、授权码与密码换取、ID 令牌核验 |
-| `iam/tokens.go` | 签发访问令牌 |
-| `iam/keys.go` | 签名密钥、kid（RFC 7638 指纹）、JWKS |
-| `iam/store.go` | 登录中的请求、按签发者与 subject 的账号绑定、会话（记下创建时的恢复代次，恢复之后的清扫 `endBeforeRecovery`）；会话结束与安全变更在同一事务里写发件表 |
-| `iam/product.go` | 对 Casdoor 的管理一侧：读组织的用户、禁用与允许一个用户、结束一个用户的会话、删除第二因素（登录应用的凭据，Basic） |
-| `iam/reconcile.go` | 与 Casdoor 的全量比较（安全 03）：定期作业与补取的“回声之前”，每个账号在行锁内比较、记证据 |
-| `iam/accountops.go` | 账号操作（受保护的路由）：停用、冻结、启用（先问授权成员 `CheckAccountChange`、确认随状态发出、写 Casdoor 的顺序）、强制登出、重置第二因素 |
-| `iam/evidence.go` | 证据（协议 15）：意图、事务里的结论、没发生就取消、一般记录 |
-| `iam/replay.go` | 整套恢复第 6 步的重放（`ReplayService` 调这里）：账号状态（停用、冻结、控制台停用、回退、重新启用）与强制登出按记录重新施加；凭据收紧不重放，Casdoor 不在恢复组内，按 6.7 对照 Casdoor 核对（`checkCredential`，线协议 P12.20） |
-| `iam/accounts.go` | 账号状态流的声明（水位来源，补取者与读取者只有 `infra/authz`）与两个读取函数：按主体批量读取、快照 |
-| `iam/migrations/` | 表 |
+| [`iam/`](iam/AGENTS.md) | 入口：组件定义、配置键与组装（建 `core.Base`，路由、系统面、作业、启动、证据的重放都在这里登记，转给业务模块）；不写业务 |
+| [`internal/`](internal/AGENTS.md) | 业务：下面的模块各一个包；模块之间的依赖表与分层在它的 `AGENTS.md` |
+| [`itest/`](itest/AGENTS.md) | 集成测试（对真实的 Casdoor），按模块分文件；它的 `AGENTS.md` 是测试索引 |
+| `iam/migrations/` | 表：登录中的请求、账号、会话、状态的证据 |
 | `contract/events/` | 发出的两种事件的 schema（`iam/manifest_test.go` 核对清单） |
 | `docs/design.md` | 设计：术语、数据、规则、接口、实现状态、未决问题 |
 | `scripts/dev_setup.py` | 开发与测试环境里准备 Casdoor 的应用、开发客户端与测试用户；`TEST_USERS` 是种子数据的测试账号（账号名是轻量契约，只增不改），`make seed` 只建账号；`--users-only` 把已有的测试账号复原成种子的样子（允许登录、没有第二因素、测试密码：密码经 `set-password`，`update-user` 不改它） |
 
+业务模块（`internal/` 下）：
+
+| 模块 | 负责 |
+| --- | --- |
+| [`login`](internal/login/AGENTS.md) | 浏览器的登录流程（授权地址与 PKCE、回调、会话 Cookie、登出）、JWKS、开发换取；签发访问令牌 |
+| [`sessions`](internal/sessions/AGENTS.md) | 系统面 `be.session.v1.SessionService`（只许边缘 infra/edge）：换取、已结束的会话；改密码；恢复之后的会话清扫 |
+| [`accounts`](internal/accounts/AGENTS.md) | 账号状态流的读取（水位来源）；账号操作：停用、冻结、启用、强制登出、重置第二因素 |
+| [`reconcile`](internal/reconcile/AGENTS.md) | 与 Casdoor 的全量比较（安全 03）：定期作业与补取的“回声之前” |
+| [`replay`](internal/replay/AGENTS.md) | 整套恢复后凭据收紧的核对（对照 Casdoor，不重放） |
+
+共用的（从下往上）：[`keys`](internal/keys/AGENTS.md)（签名密钥、kid、JWKS）、[`provider`](internal/provider/AGENTS.md)（Casdoor 的 OIDC 客户端与管理接口）、[`core`](internal/core/AGENTS.md)（名字与资源定义、登录中的请求、账号与会话的存储、证据、状态的重放、`Base`）。
+
+| 想改 | 从这里开始 | 然后 |
+| --- | --- | --- |
+| 令牌的形状（声明、头部、算法） | `internal/login` 的 `Issue` | `TestTokensPassTheSDKsVerification`（`internal/login/tokens_test.go`）；协议 P8.1 |
+| 会话的寿命、空闲、Cookie | `internal/core/store.go` 的 `Use`、`internal/login` | `itest/sessions_integration_test.go` |
+| 账号状态变更的顺序与确认 | `internal/accounts` 的 `StatusHTTP`、`internal/core/store.go` 的 `SetStatus` | `itest/accounts_integration_test.go` |
+| 与 Casdoor 比较的规则 | `internal/reconcile`、`internal/core/store.go` 的 `Compare` | `itest/reconcile_integration_test.go` |
+| 换一个身份产品 | `internal/provider` | 设计的“部署与替换”；安全 11 |
+
 ## 构建与测试
 
-- `go test ./...`：单元测试。包括令牌能通过 SDK 自己的核验、密钥轮换、返回地址只留站内、PKCE 与合并安全。
-- `go test -tags integration ./iam/`：对真实的 Casdoor、PostgreSQL 与消息系统端到端测一遍，覆盖开发换取、按签发者绑定、浏览器登录、边缘经 mTLS 的换取与已结束会话、改密码（一次性用户，测完删掉）、空闲超时与登出、与 Casdoor 的比较、账号操作（授权成员是 sectest 的替身，`AccountCheck` 设它的回答）、证据的重放、整套恢复的 6.6（最后一步：推进恢复代次、以恢复阶段重启成员，结束全部会话）。要先运行 `scripts/dev_setup.py`，所需的环境变量写在测试文件开头；缺一个就失败，不会跳过；系统面的端口 9200 要空着。
+- `go test ./...`：单元测试：令牌能通过 SDK 自己的核验、密钥轮换、返回地址只留站内、PKCE、合并安全（`internal/login`）；第二人确认的窗口（`internal/accounts`）；清单（`iam/`）。
+- `go test -count=1 -tags integration ./itest/`：对真实的 Casdoor、PostgreSQL 与消息系统，每个文件测哪条流程，在 [itest/AGENTS.md](itest/AGENTS.md)。要先运行 `scripts/dev_setup.py`，环境变量写在 `itest/AGENTS.md`；缺一个就失败，不会跳过。
 - `brickkit lint`
 
 ## 设计取舍
@@ -41,7 +53,7 @@
 ## 易错点
 
 - 改了令牌的形状（声明、头部、算法），要用 SDK 的核验器重测（`TestTokensPassTheSDKsVerification`）：协议 P8.1 只接受 `at+jwt`、`kid` 与三种算法，并要求正整数的 `be_sv`。
-- 会话摘要是 Cookie 值的小写十六进制 SHA-256（`hashOf`），边缘按同样的算法计算；改了编码，边缘就换不到令牌。
+- 会话摘要是 Cookie 值的小写十六进制 SHA-256（`provider.HashOf`），边缘按同样的算法计算；改了编码，边缘就换不到令牌。
 - 会话结束的行提交之后才编号，`Ended` 读不到还没编号的行：读的一方（边缘、测试）要反复拉，不能只拉一次。
 - `return_to` 只能是站内路径，否则登录就成了开放跳转。
 - Casdoor 的 `origin` 设置决定它的 ID 令牌的 `iss`，必须与 `CASDOOR_ISSUER`（默认等于 `CASDOOR_PUBLIC_URL`）一致。
