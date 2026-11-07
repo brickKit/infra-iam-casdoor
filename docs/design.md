@@ -73,6 +73,8 @@ Casdoor（基础资源）、数据库与消息系统（必需）；授权成员�
 
 ## 实现状态
 
+3.0.41：be-sdk-go alpha.117（全系统同一个 SDK 版本；SDK 加了预占的参与方 `reserve`，线协议第 16 章）
+
 3.0.40：合并安全的单元测试从 `internal/login` 挪到入口 `iam/`，查入口与 `internal/` 下全部包（原来只查 `login` 一个包，装配项目的结构问题 SF24）。
 
 3.0.39：代码按业务模块分层，行为不变：入口包 `iam/` 只组装，业务在 `internal/` 下（`login`、`sessions`、`accounts`、`reconcile`、`replay`，下面是 `core`、`provider`、`keys`），集成测试在 `itest/`、按模块分文件；每个代码目录一份 `AGENTS.md`。
