@@ -13,7 +13,7 @@
 | --- | --- |
 | `definition.go` | `GRPCPort`、迁移、`Keys`；`Definition()`（版本在 `core.Version`） |
 | `module.go` | `Module` 与 `New`；`Jobs`（拉取 Casdoor → `reconcile.Pull`）、`Start`（接收旧行的签发者，清扫恢复之前的会话）、`Routes`、`Services`（`sessions.NewSessions`）、`Replays`（账号状态与强制登出由存储重放，凭据收紧 → `replay.CheckCredential`）；`handler` 适配 |
-| `manifest_test.go` | 单元测试：清单的 `configSchema` 与发出的事件 |
+| `manifest_test.go` | 单元测试：清单的 `configSchema` 与发出的事件；合并安全（入口与 `internal/` 下全部包） |
 | `migrations/` | 表 |
 
 ## 依赖与被依赖

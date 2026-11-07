@@ -20,7 +20,6 @@ import (
 	provider "github.com/brickKit/infra-iam-casdoor/v3/internal/provider"
 
 	"github.com/brickKit/be-sdk-go/v3/identity"
-	"github.com/brickKit/be-sdk-go/v3/mergesafety"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -135,15 +134,6 @@ func TestPKCE(t *testing.T) {
 	sum := sha256.Sum256([]byte(v))
 	assert.Equal(t, base64.RawURLEncoding.EncodeToString(sum[:]), c, "S256: base64url(SHA-256(verifier))")
 	assert.NotEqual(t, provider.RandomToken(), provider.RandomToken())
-}
-
-// TestTheModuleIsMergeSafe: the module is compiled into the Go infra shell.
-func TestTheModuleIsMergeSafe(t *testing.T) {
-	findings, err := mergesafety.CheckDir(".")
-	require.NoError(t, err)
-	for _, f := range findings {
-		t.Errorf("%v", f)
-	}
 }
 
 func jsonPart(t *testing.T, tok string, i int) (map[string]any, error) {

@@ -39,7 +39,7 @@
 
 ## 构建与测试
 
-- `go test ./...`：单元测试：令牌能通过 SDK 自己的核验、密钥轮换、返回地址只留站内、PKCE、合并安全（`internal/login`）；第二人确认的窗口（`internal/accounts`）；清单（`iam/`）。
+- `go test ./...`：单元测试：令牌能通过 SDK 自己的核验、密钥轮换、返回地址只留站内、PKCE（`internal/login`）；第二人确认的窗口（`internal/accounts`）；清单与合并安全（`iam/`，查入口与 `internal/` 下全部包）。
 - `go test -count=1 -tags integration ./itest/`：对真实的 Casdoor、PostgreSQL 与消息系统，每个文件测哪条流程，在 [itest/AGENTS.md](itest/AGENTS.md)。要先运行 `scripts/dev_setup.py`，环境变量写在 `itest/AGENTS.md`；缺一个就失败，不会跳过。
 - `brickkit lint`
 
