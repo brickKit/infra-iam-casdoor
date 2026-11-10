@@ -9,7 +9,7 @@ import (
 // Identity of the component.
 const (
 	ID      = "infra/iam-casdoor"
-	Version = "3.0.42"
+	Version = "3.0.43"
 )
 
 // The streams (be-protocol P8.27, P8.28): the ended sessions the edge reads by position (one partition, the name and
