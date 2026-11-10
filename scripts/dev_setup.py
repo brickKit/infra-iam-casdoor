@@ -37,6 +37,8 @@ TEST_USERS = {
     "test.sales.es": "销售 ES01",
     "test.sales.multi": "销售 CN01 华东区与华南区",
     "test.unit.admin.cn": "中国区授权管理员",
+    "test.buyer.cn": "采购员 CN01 采购部",
+    "test.buyer.lead": "采购主管 CN01（审批）",
     "test.revoked": "授予已撤销",
     "test.expired": "授予已过期",
     "test.nobody": "没有任何授予",

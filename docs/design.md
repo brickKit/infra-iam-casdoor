@@ -73,6 +73,8 @@ Casdoor（基础资源）、数据库与消息系统（必需）；授权成员�
 
 ## 实现状态
 
+3.0.44（阶段计划 C2 的 P4b）：开发账号加两个采购账号 `test.buyer.cn`（CN01 采购部的采购员）、`test.buyer.lead`（采购主管，审批采购员提交的单据）；行为不变。
+
 3.0.43：be-sdk-go alpha.121（全系统同一个 SDK 版本；sectest 的授权组件替身答 CheckLinkChange 与 Administrators）
 
 3.0.42：be-sdk-go alpha.119（全系统同一个 SDK 版本；订阅最后一次投递处理之前先提交死信，进程中途退出时消息不再无声消失，P6.20）
