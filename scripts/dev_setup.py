@@ -39,6 +39,8 @@ TEST_USERS = {
     "test.unit.admin.cn": "中国区授权管理员",
     "test.buyer.cn": "采购员 CN01 采购部",
     "test.buyer.lead": "采购主管 CN01（审批）",
+    "test.accountant.cn": "会计 CN01 财务部",
+    "test.finance.lead": "财务主管 CN01（审批）",
     "test.revoked": "授予已撤销",
     "test.expired": "授予已过期",
     "test.nobody": "没有任何授予",
