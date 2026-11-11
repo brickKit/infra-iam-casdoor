@@ -41,6 +41,7 @@ TEST_USERS = {
     "test.buyer.lead": "采购主管 CN01（审批）",
     "test.accountant.cn": "会计 CN01 财务部",
     "test.finance.lead": "财务主管（审批，三个法人）",
+    "test.cashier.cn": "出纳 CN01（放行与登记收付款）",
     "test.revoked": "授予已撤销",
     "test.expired": "授予已过期",
     "test.nobody": "没有任何授予",
