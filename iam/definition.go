@@ -65,7 +65,7 @@ func Keys() []config.Key {
 // Definition is the component as the launcher and the shells take it.
 func Definition() component.Definition {
 	ref := &reconcile.PullRef{} // the account stream's step before the echo reaches the module through it
-	return component.Definition{ID: core.ID, Version: core.Version, Keys: Keys(), Migrations: migrations(), GRPCPort: GRPCPort,
+	return component.Definition{ID: core.ID, PublicPrefix: "/api/iam", Version: core.Version, Keys: Keys(), Migrations: migrations(), GRPCPort: GRPCPort,
 		Streams: []events.Stream{{Name: core.StreamEnded, Partitions: 1}, accounts.AccountStream(ref)}, Evidence: true, Resend: core.OpResend, Replay: core.OpReplay, Recovery: core.OpRecover,
 		Authz: core.Definitions(),
 		New: func(rt *runtime.Runtime) (component.Module, error) {
